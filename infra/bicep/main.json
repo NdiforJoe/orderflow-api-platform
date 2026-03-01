@@ -1,0 +1,793 @@
+{
+  "$schema": "https://schema.management.azure.com/schemas/2018-05-01/subscriptionDeploymentTemplate.json#",
+  "contentVersion": "1.0.0.0",
+  "metadata": {
+    "_generator": {
+      "name": "bicep",
+      "version": "0.41.2.15936",
+      "templateHash": "14707184402959871972"
+    }
+  },
+  "parameters": {
+    "environmentName": {
+      "type": "string",
+      "defaultValue": "dev",
+      "allowedValues": [
+        "dev",
+        "prod"
+      ],
+      "metadata": {
+        "description": "Environment name - controls tier sizes and costs"
+      }
+    },
+    "location": {
+      "type": "string",
+      "defaultValue": "eastus2",
+      "metadata": {
+        "description": "Primary Azure region"
+      }
+    },
+    "uniqueSuffix": {
+      "type": "string",
+      "maxLength": 6,
+      "metadata": {
+        "description": "Unique suffix for globally unique resource names (storage, KV, ACR)"
+      }
+    },
+    "adminObjectId": {
+      "type": "string",
+      "metadata": {
+        "description": "Your Entra ID Object ID - granted Key Vault Admin for initial secret seeding"
+      }
+    }
+  },
+  "variables": {
+    "networkRgName": "[format('rg-orderflow-network-{0}', parameters('environmentName'))]",
+    "workloadRgName": "[format('rg-orderflow-{0}', parameters('environmentName'))]",
+    "tags": {
+      "Environment": "[parameters('environmentName')]",
+      "Project": "orderflow-api-platform",
+      "ManagedBy": "Bicep",
+      "WAF": "true"
+    }
+  },
+  "resources": [
+    {
+      "type": "Microsoft.Resources/resourceGroups",
+      "apiVersion": "2023-07-01",
+      "name": "[variables('networkRgName')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('tags')]"
+    },
+    {
+      "type": "Microsoft.Resources/resourceGroups",
+      "apiVersion": "2023-07-01",
+      "name": "[variables('workloadRgName')]",
+      "location": "[parameters('location')]",
+      "tags": "[variables('tags')]"
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2025-04-01",
+      "name": "[format('deploy-networking-{0}', parameters('environmentName'))]",
+      "resourceGroup": "[variables('networkRgName')]",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "environmentName": {
+            "value": "[parameters('environmentName')]"
+          },
+          "location": {
+            "value": "[parameters('location')]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.41.2.15936",
+              "templateHash": "16022115894466273162"
+            }
+          },
+          "parameters": {
+            "environmentName": {
+              "type": "string",
+              "metadata": {
+                "description": "Environment name (dev, prod)"
+              }
+            },
+            "location": {
+              "type": "string",
+              "defaultValue": "[resourceGroup().location]",
+              "metadata": {
+                "description": "Azure region for all resources"
+              }
+            },
+            "hubVnetAddressPrefix": {
+              "type": "string",
+              "defaultValue": "10.0.0.0/16",
+              "metadata": {
+                "description": "Hub VNet address space"
+              }
+            },
+            "spokeVnetAddressPrefix": {
+              "type": "string",
+              "defaultValue": "10.1.0.0/16",
+              "metadata": {
+                "description": "Spoke VNet address space"
+              }
+            }
+          },
+          "variables": {
+            "privateDnsZones": [
+              "privatelink.vaultcore.azure.net",
+              "privatelink.database.windows.net",
+              "privatelink.servicebus.windows.net",
+              "privatelink.redis.cache.windows.net",
+              "privatelink.azurecr.io"
+            ]
+          },
+          "resources": [
+            {
+              "type": "Microsoft.Network/networkSecurityGroups",
+              "apiVersion": "2023-09-01",
+              "name": "[format('nsg-apim-{0}', parameters('environmentName'))]",
+              "location": "[parameters('location')]",
+              "properties": {
+                "securityRules": [
+                  {
+                    "name": "Allow-APIM-Management",
+                    "properties": {
+                      "priority": 100,
+                      "protocol": "Tcp",
+                      "access": "Allow",
+                      "direction": "Inbound",
+                      "sourceAddressPrefix": "ApiManagement",
+                      "sourcePortRange": "*",
+                      "destinationAddressPrefix": "VirtualNetwork",
+                      "destinationPortRange": "3443",
+                      "description": "APIM management endpoint - required by platform"
+                    }
+                  },
+                  {
+                    "name": "Allow-APIM-Gateway-Inbound",
+                    "properties": {
+                      "priority": 110,
+                      "protocol": "Tcp",
+                      "access": "Allow",
+                      "direction": "Inbound",
+                      "sourceAddressPrefix": "VirtualNetwork",
+                      "sourcePortRange": "*",
+                      "destinationAddressPrefix": "VirtualNetwork",
+                      "destinationPortRange": "443",
+                      "description": "APIM gateway - internal VNet traffic only"
+                    }
+                  },
+                  {
+                    "name": "Allow-LB-Health",
+                    "properties": {
+                      "priority": 120,
+                      "protocol": "Tcp",
+                      "access": "Allow",
+                      "direction": "Inbound",
+                      "sourceAddressPrefix": "AzureLoadBalancer",
+                      "sourcePortRange": "*",
+                      "destinationAddressPrefix": "VirtualNetwork",
+                      "destinationPortRange": "6390",
+                      "description": "Azure Load Balancer health probe"
+                    }
+                  },
+                  {
+                    "name": "Deny-All-Inbound",
+                    "properties": {
+                      "priority": 4096,
+                      "protocol": "*",
+                      "access": "Deny",
+                      "direction": "Inbound",
+                      "sourceAddressPrefix": "*",
+                      "sourcePortRange": "*",
+                      "destinationAddressPrefix": "*",
+                      "destinationPortRange": "*",
+                      "description": "Deny all other inbound - explicit zero-trust"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "type": "Microsoft.Network/networkSecurityGroups",
+              "apiVersion": "2023-09-01",
+              "name": "[format('nsg-app-{0}', parameters('environmentName'))]",
+              "location": "[parameters('location')]",
+              "properties": {
+                "securityRules": [
+                  {
+                    "name": "Allow-From-APIM-Subnet",
+                    "properties": {
+                      "priority": 100,
+                      "protocol": "Tcp",
+                      "access": "Allow",
+                      "direction": "Inbound",
+                      "sourceAddressPrefix": "10.0.2.0/24",
+                      "sourcePortRange": "*",
+                      "destinationAddressPrefix": "*",
+                      "destinationPortRange": "443",
+                      "description": "Only APIM subnet can reach app - zero-trust enforcement"
+                    }
+                  },
+                  {
+                    "name": "Deny-All-Other-Inbound",
+                    "properties": {
+                      "priority": 4096,
+                      "protocol": "*",
+                      "access": "Deny",
+                      "direction": "Inbound",
+                      "sourceAddressPrefix": "*",
+                      "sourcePortRange": "*",
+                      "destinationAddressPrefix": "*",
+                      "destinationPortRange": "*",
+                      "description": "Deny all - backend never directly reachable"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "type": "Microsoft.Network/networkSecurityGroups",
+              "apiVersion": "2023-09-01",
+              "name": "[format('nsg-data-{0}', parameters('environmentName'))]",
+              "location": "[parameters('location')]",
+              "properties": {
+                "securityRules": [
+                  {
+                    "name": "Allow-From-App-Subnet-SQL",
+                    "properties": {
+                      "priority": 100,
+                      "protocol": "Tcp",
+                      "access": "Allow",
+                      "direction": "Inbound",
+                      "sourceAddressPrefix": "10.1.1.0/24",
+                      "sourcePortRange": "*",
+                      "destinationAddressPrefix": "*",
+                      "destinationPortRange": "1433",
+                      "description": "SQL - app subnet only"
+                    }
+                  },
+                  {
+                    "name": "Allow-From-App-Subnet-Redis",
+                    "properties": {
+                      "priority": 110,
+                      "protocol": "Tcp",
+                      "access": "Allow",
+                      "direction": "Inbound",
+                      "sourceAddressPrefix": "10.1.1.0/24",
+                      "sourcePortRange": "*",
+                      "destinationAddressPrefix": "*",
+                      "destinationPortRange": "6380",
+                      "description": "Redis - app subnet only"
+                    }
+                  },
+                  {
+                    "name": "Deny-All-Inbound",
+                    "properties": {
+                      "priority": 4096,
+                      "protocol": "*",
+                      "access": "Deny",
+                      "direction": "Inbound",
+                      "sourceAddressPrefix": "*",
+                      "sourcePortRange": "*",
+                      "destinationAddressPrefix": "*",
+                      "destinationPortRange": "*",
+                      "description": "Data tier - deny all other access"
+                    }
+                  }
+                ]
+              }
+            },
+            {
+              "type": "Microsoft.Network/virtualNetworks",
+              "apiVersion": "2023-09-01",
+              "name": "[format('vnet-hub-{0}', parameters('environmentName'))]",
+              "location": "[parameters('location')]",
+              "properties": {
+                "addressSpace": {
+                  "addressPrefixes": [
+                    "[parameters('hubVnetAddressPrefix')]"
+                  ]
+                },
+                "subnets": [
+                  {
+                    "name": "AzureFirewallSubnet",
+                    "properties": {
+                      "addressPrefix": "10.0.0.0/26"
+                    }
+                  },
+                  {
+                    "name": "snet-shared-services",
+                    "properties": {
+                      "addressPrefix": "10.0.1.0/24",
+                      "privateEndpointNetworkPolicies": "Disabled"
+                    }
+                  },
+                  {
+                    "name": "snet-apim",
+                    "properties": {
+                      "addressPrefix": "10.0.2.0/24",
+                      "networkSecurityGroup": {
+                        "id": "[resourceId('Microsoft.Network/networkSecurityGroups', format('nsg-apim-{0}', parameters('environmentName')))]"
+                      }
+                    }
+                  },
+                  {
+                    "name": "AzureBastionSubnet",
+                    "properties": {
+                      "addressPrefix": "10.0.3.0/27"
+                    }
+                  }
+                ]
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Network/networkSecurityGroups', format('nsg-apim-{0}', parameters('environmentName')))]"
+              ]
+            },
+            {
+              "type": "Microsoft.Network/virtualNetworks",
+              "apiVersion": "2023-09-01",
+              "name": "[format('vnet-spoke-{0}', parameters('environmentName'))]",
+              "location": "[parameters('location')]",
+              "properties": {
+                "addressSpace": {
+                  "addressPrefixes": [
+                    "[parameters('spokeVnetAddressPrefix')]"
+                  ]
+                },
+                "subnets": [
+                  {
+                    "name": "snet-app",
+                    "properties": {
+                      "addressPrefix": "10.1.1.0/24",
+                      "networkSecurityGroup": {
+                        "id": "[resourceId('Microsoft.Network/networkSecurityGroups', format('nsg-app-{0}', parameters('environmentName')))]"
+                      },
+                      "delegations": [
+                        {
+                          "name": "appServiceDelegation",
+                          "properties": {
+                            "serviceName": "Microsoft.Web/serverFarms"
+                          }
+                        }
+                      ]
+                    }
+                  },
+                  {
+                    "name": "snet-integration",
+                    "properties": {
+                      "addressPrefix": "10.1.2.0/24",
+                      "privateEndpointNetworkPolicies": "Disabled"
+                    }
+                  },
+                  {
+                    "name": "snet-data",
+                    "properties": {
+                      "addressPrefix": "10.1.3.0/24",
+                      "networkSecurityGroup": {
+                        "id": "[resourceId('Microsoft.Network/networkSecurityGroups', format('nsg-data-{0}', parameters('environmentName')))]"
+                      },
+                      "privateEndpointNetworkPolicies": "Disabled"
+                    }
+                  }
+                ]
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Network/networkSecurityGroups', format('nsg-app-{0}', parameters('environmentName')))]",
+                "[resourceId('Microsoft.Network/networkSecurityGroups', format('nsg-data-{0}', parameters('environmentName')))]"
+              ]
+            },
+            {
+              "type": "Microsoft.Network/virtualNetworks/virtualNetworkPeerings",
+              "apiVersion": "2023-09-01",
+              "name": "[format('{0}/{1}', format('vnet-hub-{0}', parameters('environmentName')), 'peer-hub-to-spoke')]",
+              "properties": {
+                "remoteVirtualNetwork": {
+                  "id": "[resourceId('Microsoft.Network/virtualNetworks', format('vnet-spoke-{0}', parameters('environmentName')))]"
+                },
+                "allowVirtualNetworkAccess": true,
+                "allowForwardedTraffic": true,
+                "allowGatewayTransit": true,
+                "useRemoteGateways": false
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Network/virtualNetworks', format('vnet-hub-{0}', parameters('environmentName')))]",
+                "[resourceId('Microsoft.Network/virtualNetworks', format('vnet-spoke-{0}', parameters('environmentName')))]"
+              ]
+            },
+            {
+              "type": "Microsoft.Network/virtualNetworks/virtualNetworkPeerings",
+              "apiVersion": "2023-09-01",
+              "name": "[format('{0}/{1}', format('vnet-spoke-{0}', parameters('environmentName')), 'peer-spoke-to-hub')]",
+              "properties": {
+                "remoteVirtualNetwork": {
+                  "id": "[resourceId('Microsoft.Network/virtualNetworks', format('vnet-hub-{0}', parameters('environmentName')))]"
+                },
+                "allowVirtualNetworkAccess": true,
+                "allowForwardedTraffic": true,
+                "allowGatewayTransit": false,
+                "useRemoteGateways": false
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Network/virtualNetworks/virtualNetworkPeerings', format('vnet-hub-{0}', parameters('environmentName')), 'peer-hub-to-spoke')]",
+                "[resourceId('Microsoft.Network/virtualNetworks', format('vnet-hub-{0}', parameters('environmentName')))]",
+                "[resourceId('Microsoft.Network/virtualNetworks', format('vnet-spoke-{0}', parameters('environmentName')))]"
+              ]
+            },
+            {
+              "copy": {
+                "name": "dnsZones",
+                "count": "[length(variables('privateDnsZones'))]"
+              },
+              "type": "Microsoft.Network/privateDnsZones",
+              "apiVersion": "2020-06-01",
+              "name": "[variables('privateDnsZones')[copyIndex()]]",
+              "location": "global"
+            },
+            {
+              "copy": {
+                "name": "dnsZoneHubLinks",
+                "count": "[length(variables('privateDnsZones'))]"
+              },
+              "type": "Microsoft.Network/privateDnsZones/virtualNetworkLinks",
+              "apiVersion": "2020-06-01",
+              "name": "[format('{0}/{1}', variables('privateDnsZones')[copyIndex()], format('link-hub-{0}', replace(variables('privateDnsZones')[copyIndex()], '.', '-')))]",
+              "location": "global",
+              "properties": {
+                "virtualNetwork": {
+                  "id": "[resourceId('Microsoft.Network/virtualNetworks', format('vnet-hub-{0}', parameters('environmentName')))]"
+                },
+                "registrationEnabled": false
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Network/privateDnsZones', variables('privateDnsZones')[copyIndex()])]",
+                "[resourceId('Microsoft.Network/virtualNetworks', format('vnet-hub-{0}', parameters('environmentName')))]"
+              ]
+            },
+            {
+              "copy": {
+                "name": "dnsZoneSpokeLinks",
+                "count": "[length(variables('privateDnsZones'))]"
+              },
+              "type": "Microsoft.Network/privateDnsZones/virtualNetworkLinks",
+              "apiVersion": "2020-06-01",
+              "name": "[format('{0}/{1}', variables('privateDnsZones')[copyIndex()], format('link-spoke-{0}', replace(variables('privateDnsZones')[copyIndex()], '.', '-')))]",
+              "location": "global",
+              "properties": {
+                "virtualNetwork": {
+                  "id": "[resourceId('Microsoft.Network/virtualNetworks', format('vnet-spoke-{0}', parameters('environmentName')))]"
+                },
+                "registrationEnabled": false
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Network/privateDnsZones', variables('privateDnsZones')[copyIndex()])]",
+                "[resourceId('Microsoft.Network/virtualNetworks', format('vnet-spoke-{0}', parameters('environmentName')))]"
+              ]
+            }
+          ],
+          "outputs": {
+            "hubVnetId": {
+              "type": "string",
+              "value": "[resourceId('Microsoft.Network/virtualNetworks', format('vnet-hub-{0}', parameters('environmentName')))]"
+            },
+            "hubVnetName": {
+              "type": "string",
+              "value": "[format('vnet-hub-{0}', parameters('environmentName'))]"
+            },
+            "spokeVnetId": {
+              "type": "string",
+              "value": "[resourceId('Microsoft.Network/virtualNetworks', format('vnet-spoke-{0}', parameters('environmentName')))]"
+            },
+            "spokeVnetName": {
+              "type": "string",
+              "value": "[format('vnet-spoke-{0}', parameters('environmentName'))]"
+            },
+            "apimSubnetId": {
+              "type": "string",
+              "value": "[reference(resourceId('Microsoft.Network/virtualNetworks', format('vnet-hub-{0}', parameters('environmentName'))), '2023-09-01').subnets[2].id]"
+            },
+            "sharedServicesSubnetId": {
+              "type": "string",
+              "value": "[reference(resourceId('Microsoft.Network/virtualNetworks', format('vnet-hub-{0}', parameters('environmentName'))), '2023-09-01').subnets[1].id]"
+            },
+            "appSubnetId": {
+              "type": "string",
+              "value": "[reference(resourceId('Microsoft.Network/virtualNetworks', format('vnet-spoke-{0}', parameters('environmentName'))), '2023-09-01').subnets[0].id]"
+            },
+            "integrationSubnetId": {
+              "type": "string",
+              "value": "[reference(resourceId('Microsoft.Network/virtualNetworks', format('vnet-spoke-{0}', parameters('environmentName'))), '2023-09-01').subnets[1].id]"
+            },
+            "dataSubnetId": {
+              "type": "string",
+              "value": "[reference(resourceId('Microsoft.Network/virtualNetworks', format('vnet-spoke-{0}', parameters('environmentName'))), '2023-09-01').subnets[2].id]"
+            },
+            "keyVaultDnsZoneId": {
+              "type": "string",
+              "value": "[resourceId('Microsoft.Network/privateDnsZones', variables('privateDnsZones')[0])]"
+            },
+            "sqlDnsZoneId": {
+              "type": "string",
+              "value": "[resourceId('Microsoft.Network/privateDnsZones', variables('privateDnsZones')[1])]"
+            },
+            "serviceBusDnsZoneId": {
+              "type": "string",
+              "value": "[resourceId('Microsoft.Network/privateDnsZones', variables('privateDnsZones')[2])]"
+            },
+            "redisDnsZoneId": {
+              "type": "string",
+              "value": "[resourceId('Microsoft.Network/privateDnsZones', variables('privateDnsZones')[3])]"
+            }
+          }
+        }
+      },
+      "dependsOn": [
+        "[subscriptionResourceId('Microsoft.Resources/resourceGroups', variables('networkRgName'))]"
+      ]
+    },
+    {
+      "type": "Microsoft.Resources/deployments",
+      "apiVersion": "2025-04-01",
+      "name": "[format('deploy-keyvault-{0}', parameters('environmentName'))]",
+      "resourceGroup": "[variables('workloadRgName')]",
+      "properties": {
+        "expressionEvaluationOptions": {
+          "scope": "inner"
+        },
+        "mode": "Incremental",
+        "parameters": {
+          "environmentName": {
+            "value": "[parameters('environmentName')]"
+          },
+          "location": {
+            "value": "[parameters('location')]"
+          },
+          "uniqueSuffix": {
+            "value": "[parameters('uniqueSuffix')]"
+          },
+          "privateEndpointSubnetId": {
+            "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('networkRgName')), 'Microsoft.Resources/deployments', format('deploy-networking-{0}', parameters('environmentName'))), '2025-04-01').outputs.sharedServicesSubnetId.value]"
+          },
+          "hubVnetId": {
+            "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('networkRgName')), 'Microsoft.Resources/deployments', format('deploy-networking-{0}', parameters('environmentName'))), '2025-04-01').outputs.hubVnetId.value]"
+          },
+          "keyVaultDnsZoneId": {
+            "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('networkRgName')), 'Microsoft.Resources/deployments', format('deploy-networking-{0}', parameters('environmentName'))), '2025-04-01').outputs.keyVaultDnsZoneId.value]"
+          }
+        },
+        "template": {
+          "$schema": "https://schema.management.azure.com/schemas/2019-04-01/deploymentTemplate.json#",
+          "contentVersion": "1.0.0.0",
+          "metadata": {
+            "_generator": {
+              "name": "bicep",
+              "version": "0.41.2.15936",
+              "templateHash": "165691120798993060"
+            }
+          },
+          "parameters": {
+            "environmentName": {
+              "type": "string",
+              "metadata": {
+                "description": "Environment name"
+              }
+            },
+            "location": {
+              "type": "string",
+              "defaultValue": "[resourceGroup().location]",
+              "metadata": {
+                "description": "Azure region"
+              }
+            },
+            "uniqueSuffix": {
+              "type": "string",
+              "metadata": {
+                "description": "Unique suffix to ensure globally unique Key Vault name"
+              }
+            },
+            "privateEndpointSubnetId": {
+              "type": "string",
+              "metadata": {
+                "description": "Subnet ID for private endpoint"
+              }
+            },
+            "hubVnetId": {
+              "type": "string",
+              "metadata": {
+                "description": "Hub VNet ID for private endpoint network interface"
+              }
+            },
+            "keyVaultDnsZoneId": {
+              "type": "string",
+              "metadata": {
+                "description": "Private DNS Zone ID for Key Vault"
+              }
+            },
+            "appServicePrincipalId": {
+              "type": "string",
+              "defaultValue": "",
+              "metadata": {
+                "description": "App Service Managed Identity principal ID - granted Secrets User role"
+              }
+            },
+            "logAnalyticsWorkspaceId": {
+              "type": "string",
+              "defaultValue": "",
+              "metadata": {
+                "description": "Log Analytics Workspace ID for diagnostics"
+              }
+            }
+          },
+          "variables": {
+            "keyVaultSecretsUserRoleId": "4633458b-17de-408a-b874-0445c86b69e6"
+          },
+          "resources": [
+            {
+              "type": "Microsoft.KeyVault/vaults",
+              "apiVersion": "2023-07-01",
+              "name": "[format('kv-orderflow-{0}-{1}', parameters('environmentName'), parameters('uniqueSuffix'))]",
+              "location": "[parameters('location')]",
+              "properties": {
+                "sku": {
+                  "family": "A",
+                  "name": "standard"
+                },
+                "tenantId": "[subscription().tenantId]",
+                "enableRbacAuthorization": true,
+                "enableSoftDelete": true,
+                "softDeleteRetentionInDays": "[if(equals(parameters('environmentName'), 'prod'), 90, 7)]",
+                "enablePurgeProtection": true,
+                "networkAcls": {
+                  "defaultAction": "Deny",
+                  "bypass": "AzureServices",
+                  "ipRules": [],
+                  "virtualNetworkRules": []
+                },
+                "publicNetworkAccess": "Disabled"
+              }
+            },
+            {
+              "condition": "[not(equals(parameters('appServicePrincipalId'), ''))]",
+              "type": "Microsoft.Authorization/roleAssignments",
+              "apiVersion": "2022-04-01",
+              "scope": "[resourceId('Microsoft.KeyVault/vaults', format('kv-orderflow-{0}-{1}', parameters('environmentName'), parameters('uniqueSuffix')))]",
+              "name": "[guid(resourceId('Microsoft.KeyVault/vaults', format('kv-orderflow-{0}-{1}', parameters('environmentName'), parameters('uniqueSuffix'))), variables('keyVaultSecretsUserRoleId'), parameters('appServicePrincipalId'))]",
+              "properties": {
+                "roleDefinitionId": "[subscriptionResourceId('Microsoft.Authorization/roleDefinitions', variables('keyVaultSecretsUserRoleId'))]",
+                "principalId": "[parameters('appServicePrincipalId')]",
+                "principalType": "ServicePrincipal",
+                "description": "App Service MI - read secrets only, not administer"
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.KeyVault/vaults', format('kv-orderflow-{0}-{1}', parameters('environmentName'), parameters('uniqueSuffix')))]"
+              ]
+            },
+            {
+              "type": "Microsoft.Network/privateEndpoints",
+              "apiVersion": "2023-09-01",
+              "name": "[format('pe-kv-orderflow-{0}', parameters('environmentName'))]",
+              "location": "[parameters('location')]",
+              "properties": {
+                "subnet": {
+                  "id": "[parameters('privateEndpointSubnetId')]"
+                },
+                "privateLinkServiceConnections": [
+                  {
+                    "name": "[format('plsc-kv-orderflow-{0}', parameters('environmentName'))]",
+                    "properties": {
+                      "privateLinkServiceId": "[resourceId('Microsoft.KeyVault/vaults', format('kv-orderflow-{0}-{1}', parameters('environmentName'), parameters('uniqueSuffix')))]",
+                      "groupIds": [
+                        "vault"
+                      ]
+                    }
+                  }
+                ]
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.KeyVault/vaults', format('kv-orderflow-{0}-{1}', parameters('environmentName'), parameters('uniqueSuffix')))]"
+              ]
+            },
+            {
+              "type": "Microsoft.Network/privateEndpoints/privateDnsZoneGroups",
+              "apiVersion": "2023-09-01",
+              "name": "[format('{0}/{1}', format('pe-kv-orderflow-{0}', parameters('environmentName')), 'default')]",
+              "properties": {
+                "privateDnsZoneConfigs": [
+                  {
+                    "name": "privatelink-vaultcore-azure-net",
+                    "properties": {
+                      "privateDnsZoneId": "[parameters('keyVaultDnsZoneId')]"
+                    }
+                  }
+                ]
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.Network/privateEndpoints', format('pe-kv-orderflow-{0}', parameters('environmentName')))]"
+              ]
+            },
+            {
+              "condition": "[not(equals(parameters('logAnalyticsWorkspaceId'), ''))]",
+              "type": "Microsoft.Insights/diagnosticSettings",
+              "apiVersion": "2021-05-01-preview",
+              "scope": "[resourceId('Microsoft.KeyVault/vaults', format('kv-orderflow-{0}-{1}', parameters('environmentName'), parameters('uniqueSuffix')))]",
+              "name": "[format('diag-kv-orderflow-{0}', parameters('environmentName'))]",
+              "properties": {
+                "workspaceId": "[parameters('logAnalyticsWorkspaceId')]",
+                "logs": [
+                  {
+                    "category": "AuditEvent",
+                    "enabled": true
+                  }
+                ],
+                "metrics": [
+                  {
+                    "category": "AllMetrics",
+                    "enabled": true
+                  }
+                ]
+              },
+              "dependsOn": [
+                "[resourceId('Microsoft.KeyVault/vaults', format('kv-orderflow-{0}-{1}', parameters('environmentName'), parameters('uniqueSuffix')))]"
+              ]
+            }
+          ],
+          "outputs": {
+            "keyVaultId": {
+              "type": "string",
+              "value": "[resourceId('Microsoft.KeyVault/vaults', format('kv-orderflow-{0}-{1}', parameters('environmentName'), parameters('uniqueSuffix')))]"
+            },
+            "keyVaultName": {
+              "type": "string",
+              "value": "[format('kv-orderflow-{0}-{1}', parameters('environmentName'), parameters('uniqueSuffix'))]"
+            },
+            "keyVaultUri": {
+              "type": "string",
+              "value": "[reference(resourceId('Microsoft.KeyVault/vaults', format('kv-orderflow-{0}-{1}', parameters('environmentName'), parameters('uniqueSuffix'))), '2023-07-01').vaultUri]"
+            }
+          }
+        }
+      },
+      "dependsOn": [
+        "[extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('networkRgName')), 'Microsoft.Resources/deployments', format('deploy-networking-{0}', parameters('environmentName')))]",
+        "[subscriptionResourceId('Microsoft.Resources/resourceGroups', variables('workloadRgName'))]"
+      ]
+    }
+  ],
+  "outputs": {
+    "networkRgName": {
+      "type": "string",
+      "value": "[variables('networkRgName')]"
+    },
+    "workloadRgName": {
+      "type": "string",
+      "value": "[variables('workloadRgName')]"
+    },
+    "hubVnetId": {
+      "type": "string",
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('networkRgName')), 'Microsoft.Resources/deployments', format('deploy-networking-{0}', parameters('environmentName'))), '2025-04-01').outputs.hubVnetId.value]"
+    },
+    "spokeVnetId": {
+      "type": "string",
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('networkRgName')), 'Microsoft.Resources/deployments', format('deploy-networking-{0}', parameters('environmentName'))), '2025-04-01').outputs.spokeVnetId.value]"
+    },
+    "keyVaultName": {
+      "type": "string",
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('workloadRgName')), 'Microsoft.Resources/deployments', format('deploy-keyvault-{0}', parameters('environmentName'))), '2025-04-01').outputs.keyVaultName.value]"
+    },
+    "keyVaultUri": {
+      "type": "string",
+      "value": "[reference(extensionResourceId(format('/subscriptions/{0}/resourceGroups/{1}', subscription().subscriptionId, variables('workloadRgName')), 'Microsoft.Resources/deployments', format('deploy-keyvault-{0}', parameters('environmentName'))), '2025-04-01').outputs.keyVaultUri.value]"
+    }
+  }
+}
