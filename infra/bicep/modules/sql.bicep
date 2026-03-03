@@ -12,11 +12,11 @@ param environmentName string
 @description('Azure region')
 param location string = resourceGroup().location
 
-@description('Data subnet ID for private endpoint')
-param dataSubnetId string
+// @description('Data subnet ID for private endpoint')
+// param dataSubnetId string
 
-@description('SQL private DNS zone ID')
-param sqlDnsZoneId string
+// @description('SQL private DNS zone ID')
+// param sqlDnsZoneId string
 
 @description('Log Analytics Workspace ID')
 param logAnalyticsWorkspaceId string
@@ -85,39 +85,39 @@ resource sqlDatabase 'Microsoft.Sql/servers/databases@2023-05-01-preview' = {
 // SQL only accessible from within the VNet via private endpoint
 // =============================================================================
 
-resource sqlPrivateEndpoint 'Microsoft.Network/privateEndpoints@2023-09-01' = {
-  name: 'pe-sql-orderflow-${environmentName}'
-  location: location
-  properties: {
-    subnet: {
-      id: dataSubnetId
-    }
-    privateLinkServiceConnections: [
-      {
-        name: 'plsc-sql-orderflow-${environmentName}'
-        properties: {
-          privateLinkServiceId: sqlServer.id
-          groupIds: ['sqlServer']
-        }
-      }
-    ]
-  }
-}
+// resource sqlPrivateEndpoint 'Microsoft.Network/privateEndpoints@2023-09-01' = {
+//   name: 'pe-sql-orderflow-${environmentName}'
+//   location: location
+//   properties: {
+//     subnet: {
+//       id: dataSubnetId
+//     }
+//     privateLinkServiceConnections: [
+//       {
+//         name: 'plsc-sql-orderflow-${environmentName}'
+//         properties: {
+//           privateLinkServiceId: sqlServer.id
+//           groupIds: ['sqlServer']
+//         }
+//       }
+//     ]
+//   }
+// }
 
-resource sqlDnsZoneGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2023-09-01' = {
-  name: 'default'
-  parent: sqlPrivateEndpoint
-  properties: {
-    privateDnsZoneConfigs: [
-      {
-        name: 'privatelink-database-windows-net'
-        properties: {
-          privateDnsZoneId: sqlDnsZoneId
-        }
-      }
-    ]
-  }
-}
+// resource sqlDnsZoneGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2023-09-01' = {
+//   name: 'default'
+//   parent: sqlPrivateEndpoint
+//   properties: {
+//     privateDnsZoneConfigs: [
+//       {
+//         name: 'privatelink-database-windows-net'
+//         properties: {
+//           privateDnsZoneId: sqlDnsZoneId
+//         }
+//       }
+//     ]
+//   }
+// }
 
 // =============================================================================
 // DIAGNOSTIC SETTINGS

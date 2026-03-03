@@ -93,19 +93,17 @@ module apim 'modules/apim.bicep' = {
   }
 }
 
-// module sql 'modules/sql.bicep' = {
-//   name: 'deploy-sql-${environmentName}'
-//   scope: workloadRg
-//   params: {
-//     environmentName: environmentName
-//     location: 'westus2'  // eastus2 and eastus not accepting new SQL servers
-//     dataSubnetId: networking.outputs.dataSubnetId
-//     sqlDnsZoneId: networking.outputs.sqlDnsZoneId
-//     logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsWorkspaceId
-//     sqlAdminObjectId: sqlAdminObjectId != '' ? sqlAdminObjectId : subscription().tenantId
-//     sqlAdminDisplayName: 'orderflow-sql-admins'
-//   }
-// }
+module sql 'modules/sql.bicep' = {
+  name: 'deploy-sql-${environmentName}'
+  scope: workloadRg
+  params: {
+    environmentName: environmentName
+    location: 'westus2'
+    logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsWorkspaceId
+    sqlAdminObjectId: sqlAdminObjectId != '' ? sqlAdminObjectId : subscription().tenantId
+    sqlAdminDisplayName: 'orderflow-sql-admins'
+  }
+}
 
 module redis 'modules/redis.bicep' = {
   name: 'deploy-redis-${environmentName}'
@@ -180,8 +178,8 @@ output webAppHostname    string = appService.outputs.webAppHostname
 output webAppPrincipalId string = appService.outputs.webAppPrincipalId
 output apimName          string = apim.outputs.apimName
 output apimGatewayUrl    string = apim.outputs.apimGatewayUrl
-// output sqlServerName     string = sql.outputs.sqlServerName
-// output sqlDatabaseName   string = sql.outputs.sqlDatabaseName
+output sqlServerName     string = sql.outputs.sqlServerName
+output sqlDatabaseName   string = sql.outputs.sqlDatabaseName
 output redisName         string = redis.outputs.redisName
 output serviceBusName    string = serviceBus.outputs.serviceBusName
 output acrLoginServer    string = acr.outputs.acrLoginServer
