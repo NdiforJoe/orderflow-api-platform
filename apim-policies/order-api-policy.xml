@@ -1,0 +1,126 @@
+<!--
+    order-api-policy.xml
+    Applies to ALL operations on the Order Management API
+    WAF Security: JWT validation, rate limiting, OWASP mitigations
+    WAF Performance: response caching for GET /orders
+    ADR-004: APIM is the single JWT validation point — backend trusts enriched headers
+-->
+<policies>
+    <inbound>
+        <base />
+
+        <!--
+            JWT VALIDATION
+            Validates Entra ID tokens before any request reaches the backend
+            Backend never sees a raw JWT — only the enriched headers below
+            Audience must match the Order API app registration client ID
+            Issuer must match your Entra ID tenant
+        -->
+        <validate-jwt header-name="Authorization"
+                      failed-validation-httpcode="401"
+                      failed-validation-error-message="Unauthorized: valid Bearer token required"
+                      require-expiration-time="true"
+                      require-scheme="Bearer"
+                      require-signed-tokens="true">
+            <openid-config url="https://login.microsoftonline.com/{{tenant-id}}/v2.0/.well-known/openid-configuration" />
+            <audiences>
+                <audience>{{order-api-client-id}}</audience>
+            </audiences>
+            <issuers>
+                <issuer>https://sts.windows.net/{{tenant-id}}/</issuer>
+                <issuer>https://login.microsoftonline.com/{{tenant-id}}/v2.0</issuer>
+            </issuers>
+            <required-claims>
+                <claim name="scp" match="any">
+                    <value>Orders.Read</value>
+                    <value>Orders.Write</value>
+                </claim>
+            </required-claims>
+        </validate-jwt>
+
+        <!--
+            RATE LIMITING
+            Per subscription key: 100 calls per 60 seconds
+            Prevents a single consumer from overwhelming the backend
+            Returns 429 with Retry-After header when exceeded
+        -->
+        <rate-limit-by-key calls="100"
+                           renewal-period="60"
+                           counter-key="@(context.Subscription.Id)"
+                           increment-condition="@(context.Response.StatusCode != 429)"
+                           remaining-calls-header-name="X-RateLimit-Remaining"
+                           retry-after-header-name="Retry-After" />
+
+        <!--
+            INJECT ENRICHED HEADERS
+            Strip raw JWT, inject structured consumer context
+            Backend reads these headers — never the raw JWT
+            X-Consumer-Id: used for audit trail in App Insights
+            X-Tenant-Id: used for tenant-scoped data queries
+            X-Consumer-Scope: used for fine-grained authz in backend
+        -->
+        <set-header name="X-Consumer-Id" exists-action="override">
+            <value>@(context.Request.Headers.GetValueOrDefault("Authorization","").Split(' ').Last().AsJwt()?.Subject ?? "unknown")</value>
+        </set-header>
+        <set-header name="X-Tenant-Id" exists-action="override">
+            <value>@(context.Request.Headers.GetValueOrDefault("Authorization","").Split(' ').Last().AsJwt()?.Claims.GetValueOrDefault("tid", "default"))</value>
+        </set-header>
+        <set-header name="X-Consumer-Scope" exists-action="override">
+            <value>@(context.Request.Headers.GetValueOrDefault("Authorization","").Split(' ').Last().AsJwt()?.Claims.GetValueOrDefault("scp", ""))</value>
+        </set-header>
+
+        <!--
+            REMOVE RAW AUTHORIZATION HEADER
+            Backend never receives the JWT — only enriched headers
+            If backend is somehow exposed directly, it gets no auth context
+        -->
+        <set-header name="Authorization" exists-action="delete" />
+
+        <!--
+            RESPONSE CACHING — GET requests only
+            Cache GET /orders responses for 60 seconds
+            Reduces SQL load significantly for high-read workloads
+            Vary by subscription key so tenants don't see each other's data
+        -->
+        <cache-lookup vary-by-developer="false"
+                      vary-by-developer-groups="false"
+                      downstream-caching-type="none">
+            <vary-by-header>Ocp-Apim-Subscription-Key</vary-by-header>
+        </cache-lookup>
+    </inbound>
+    <backend>
+        <base />
+    </backend>
+    <outbound>
+        <base />
+
+        <!-- Store GET responses in cache for 60 seconds -->
+        <cache-store duration="60" />
+    </outbound>
+    <on-error>
+        <base />
+
+        <!--
+            SANITISE ERROR RESPONSES
+            Never expose internal stack traces or infrastructure details to callers
+            Log full error internally via App Insights logger
+        -->
+        <choose>
+            <when condition="@(context.Response.StatusCode >= 500)">
+                <return-response>
+                    <set-status code="@(context.Response.StatusCode)" reason="@(context.Response.StatusReason)" />
+                    <set-header name="Content-Type" exists-action="override">
+                        <value>application/json</value>
+                    </set-header>
+                    <set-body>@{
+                        return new JObject(
+                            new JProperty("error", "An internal error occurred"),
+                            new JProperty("correlationId", context.Variables["correlationId"]),
+                            new JProperty("timestamp", DateTime.UtcNow)
+                        ).ToString();
+                    }</set-body>
+                </return-response>
+            </when>
+        </choose>
+    </on-error>
+</policies>

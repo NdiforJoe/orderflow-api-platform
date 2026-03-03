@@ -76,6 +76,19 @@ module appService 'modules/appservice.bicep' = {
   }
 }
 
+module apim 'modules/apim.bicep' = {
+  name: 'deploy-apim-${environmentName}'
+  scope: workloadRg
+  params: {
+    environmentName: environmentName
+    location: location
+    apimSubnetId: networking.outputs.apimSubnetId
+    appInsightsId: monitoring.outputs.appInsightsId
+    appInsightsInstrumentationKey: monitoring.outputs.appInsightsInstrumentationKey
+    logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsWorkspaceId
+    backendHostname: appService.outputs.webAppHostname
+  }
+}
 module prodSlotKvRbac 'modules/rbac.bicep' = {
   name: 'deploy-prod-kv-rbac-${environmentName}'
   scope: workloadRg
@@ -107,3 +120,6 @@ output appInsightsName   string = monitoring.outputs.appInsightsName
 output webAppName        string = appService.outputs.webAppName
 output webAppHostname    string = appService.outputs.webAppHostname
 output webAppPrincipalId string = appService.outputs.webAppPrincipalId
+output apimName        string = apim.outputs.apimName
+output apimGatewayUrl  string = apim.outputs.apimGatewayUrl
+output apimPrincipalId string = apim.outputs.apimPrincipalId
