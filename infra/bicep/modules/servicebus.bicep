@@ -11,12 +11,6 @@ param environmentName string
 @description('Azure region')
 param location string = resourceGroup().location
 
-@description('Integration subnet ID for private endpoint')
-param integrationSubnetId string
-
-@description('Service Bus private DNS zone ID')
-param serviceBusDnsZoneId string
-
 @description('Log Analytics Workspace ID')
 param logAnalyticsWorkspaceId string
 
@@ -37,7 +31,7 @@ resource serviceBus 'Microsoft.ServiceBus/namespaces@2022-10-01-preview' = {
   }
   properties: {
     minimumTlsVersion: '1.2'
-    publicNetworkAccess: 'Disabled'
+    publicNetworkAccess: 'Enabled' // Standard tier does not support private endpoints
     disableLocalAuth: true // Entra ID only — no SAS key auth
   }
 }
@@ -95,43 +89,43 @@ resource appServiceSbRbac 'Microsoft.Authorization/roleAssignments@2022-04-01' =
   }
 }
 
-// =============================================================================
-// PRIVATE ENDPOINT
-// =============================================================================
+// // =============================================================================
+// // PRIVATE ENDPOINT
+// // =============================================================================
 
-resource sbPrivateEndpoint 'Microsoft.Network/privateEndpoints@2023-09-01' = {
-  name: 'pe-sb-orderflow-${environmentName}'
-  location: location
-  properties: {
-    subnet: {
-      id: integrationSubnetId
-    }
-    privateLinkServiceConnections: [
-      {
-        name: 'plsc-sb-orderflow-${environmentName}'
-        properties: {
-          privateLinkServiceId: serviceBus.id
-          groupIds: ['namespace']
-        }
-      }
-    ]
-  }
-}
+// resource sbPrivateEndpoint 'Microsoft.Network/privateEndpoints@2023-09-01' = {
+//   name: 'pe-sb-orderflow-${environmentName}'
+//   location: location
+//   properties: {
+//     subnet: {
+//       id: integrationSubnetId
+//     }
+//     privateLinkServiceConnections: [
+//       {
+//         name: 'plsc-sb-orderflow-${environmentName}'
+//         properties: {
+//           privateLinkServiceId: serviceBus.id
+//           groupIds: ['namespace']
+//         }
+//       }
+//     ]
+//   }
+// }
 
-resource sbDnsZoneGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2023-09-01' = {
-  name: 'default'
-  parent: sbPrivateEndpoint
-  properties: {
-    privateDnsZoneConfigs: [
-      {
-        name: 'privatelink-servicebus-windows-net'
-        properties: {
-          privateDnsZoneId: serviceBusDnsZoneId
-        }
-      }
-    ]
-  }
-}
+// resource sbDnsZoneGroup 'Microsoft.Network/privateEndpoints/privateDnsZoneGroups@2023-09-01' = {
+//   name: 'default'
+//   parent: sbPrivateEndpoint
+//   properties: {
+//     privateDnsZoneConfigs: [
+//       {
+//         name: 'privatelink-servicebus-windows-net'
+//         properties: {
+//           privateDnsZoneId: serviceBusDnsZoneId
+//         }
+//       }
+//     ]
+//   }
+// }
 
 // =============================================================================
 // DIAGNOSTIC SETTINGS
