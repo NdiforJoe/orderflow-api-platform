@@ -1,7 +1,8 @@
 // =============================================================================
 // main.bicep — Subscription-scope orchestrator
-// Deployment order: networking → monitoring → keyVault → appService → rbac
-// Circular dependency resolved: RBAC assigned AFTER both KV and AppService deploy
+// Phase 3 partial: networking + monitoring + keyVault only
+// App Service modules commented out pending quota approval (DSv3 request submitted)
+// Uncomment appService, prodSlotKvRbac, stagingSlotKvRbac once quota approved
 // =============================================================================
 
 targetScope = 'subscription'
@@ -17,13 +18,6 @@ param location string = 'eastus2'
 @maxLength(6)
 param uniqueSuffix string
 
-@description('Alert notification email (optional)')
-param alertEmailAddress string = ''
-
-// =============================================================================
-// VARIABLES
-// =============================================================================
-
 var networkRgName  = 'rg-orderflow-network-${environmentName}'
 var workloadRgName = 'rg-orderflow-${environmentName}'
 var tags = {
@@ -32,10 +26,6 @@ var tags = {
   ManagedBy: 'Bicep'
   WAF: 'true'
 }
-
-// =============================================================================
-// RESOURCE GROUPS
-// =============================================================================
 
 resource networkRg 'Microsoft.Resources/resourceGroups@2023-07-01' = {
   name: networkRgName
@@ -49,10 +39,6 @@ resource workloadRg 'Microsoft.Resources/resourceGroups@2023-07-01' = {
   tags: tags
 }
 
-// =============================================================================
-// NETWORKING
-// =============================================================================
-
 module networking 'modules/networking.bicep' = {
   name: 'deploy-networking-${environmentName}'
   scope: networkRg
@@ -62,26 +48,14 @@ module networking 'modules/networking.bicep' = {
   }
 }
 
-// =============================================================================
-// MONITORING
-// Deployed before App Service so connection string is available as a param
-// =============================================================================
-
 module monitoring 'modules/monitoring.bicep' = {
   name: 'deploy-monitoring-${environmentName}'
   scope: workloadRg
   params: {
     environmentName: environmentName
     location: location
-    alertEmailAddress: alertEmailAddress
   }
 }
-
-// =============================================================================
-// KEY VAULT
-// No MI principal ID here — RBAC assigned below after appService deploys
-// This breaks the circular dependency: KV no longer needs AppService output
-// =============================================================================
 
 module keyVault 'modules/keyvault.bicep' = {
   name: 'deploy-keyvault-${environmentName}'
@@ -97,50 +71,41 @@ module keyVault 'modules/keyvault.bicep' = {
 }
 
 // =============================================================================
-// APP SERVICE
-// Depends on: monitoring (connection string), networking (subnet), keyVault (URI)
-// KV URI is safe to pass here — no circular ref because KV no longer needs
-// AppService output at deploy time
+// APP SERVICE — uncomment once DSv3 quota approved
 // =============================================================================
 
-module appService 'modules/appservice.bicep' = {
-  name: 'deploy-appservice-${environmentName}'
-  scope: workloadRg
-  params: {
-    environmentName: environmentName
-    location: location
-    appSubnetId: networking.outputs.appSubnetId
-    appInsightsConnectionString: monitoring.outputs.appInsightsConnectionString
-    keyVaultUri: keyVault.outputs.keyVaultUri
-    logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsWorkspaceId
-  }
-}
+// module appService 'modules/appservice.bicep' = {
+//   name: 'deploy-appservice-${environmentName}'
+//   scope: workloadRg
+//   params: {
+//     environmentName: environmentName
+//     location: location
+//     appSubnetId: networking.outputs.appSubnetId
+//     appInsightsConnectionString: monitoring.outputs.appInsightsConnectionString
+//     keyVaultUri: keyVault.outputs.keyVaultUri
+//     logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsWorkspaceId
+//   }
+// }
 
-// =============================================================================
-// RBAC — assigned AFTER both Key Vault and App Service are deployed
-// Production slot MI
-// =============================================================================
+// module prodSlotKvRbac 'modules/rbac.bicep' = {
+//   name: 'deploy-prod-kv-rbac-${environmentName}'
+//   scope: workloadRg
+//   params: {
+//     keyVaultName: keyVault.outputs.keyVaultName
+//     principalId: appService.outputs.webAppPrincipalId
+//     roleDescription: 'Production App Service MI - Key Vault Secrets User'
+//   }
+// }
 
-module prodSlotKvRbac 'modules/rbac.bicep' = {
-  name: 'deploy-prod-kv-rbac-${environmentName}'
-  scope: workloadRg
-  params: {
-    keyVaultName: keyVault.outputs.keyVaultName
-    principalId: appService.outputs.webAppPrincipalId
-    roleDescription: 'Production App Service MI - Key Vault Secrets User'
-  }
-}
-
-// Staging slot MI
-module stagingSlotKvRbac 'modules/rbac.bicep' = {
-  name: 'deploy-staging-kv-rbac-${environmentName}'
-  scope: workloadRg
-  params: {
-    keyVaultName: keyVault.outputs.keyVaultName
-    principalId: appService.outputs.stagingSlotPrincipalId
-    roleDescription: 'Staging slot MI - Key Vault Secrets User'
-  }
-}
+// module stagingSlotKvRbac 'modules/rbac.bicep' = {
+//   name: 'deploy-staging-kv-rbac-${environmentName}'
+//   scope: workloadRg
+//   params: {
+//     keyVaultName: keyVault.outputs.keyVaultName
+//     principalId: appService.outputs.stagingSlotPrincipalId
+//     roleDescription: 'Staging slot MI - Key Vault Secrets User'
+//   }
+// }
 
 // =============================================================================
 // OUTPUTS
@@ -154,6 +119,3 @@ output keyVaultName      string = keyVault.outputs.keyVaultName
 output keyVaultUri       string = keyVault.outputs.keyVaultUri
 output logAnalyticsName  string = monitoring.outputs.logAnalyticsWorkspaceName
 output appInsightsName   string = monitoring.outputs.appInsightsName
-output webAppName        string = appService.outputs.webAppName
-output webAppHostname    string = appService.outputs.webAppHostname
-output webAppPrincipalId string = appService.outputs.webAppPrincipalId

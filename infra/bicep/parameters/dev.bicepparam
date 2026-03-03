@@ -1,7 +1,5 @@
 using '../main.bicep'
 
-param environmentName  = 'dev'
-param location         = 'eastus2'
-param uniqueSuffix     = 'dev001'
-param alertEmailAddress = ''
-
+param environmentName = 'dev'
+param location        = 'eastus2'
+param uniqueSuffix    = 'dev001'

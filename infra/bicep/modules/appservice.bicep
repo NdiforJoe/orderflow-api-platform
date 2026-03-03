@@ -34,12 +34,14 @@ resource appServicePlan 'Microsoft.Web/serverfarms@2023-12-01' = {
   name: 'asp-orderflow-${environmentName}'
   location: location
   sku: {
-    // ADR-002 trade-off: B2 dev vs P1v3 prod
-    // B2 has no zone redundancy but has deployment slots (needed for blue-green)
-    // P1v3 adds zone redundancy and better CPU burst performance
-    name: environmentName == 'prod' ? 'P1v3' : 'B2'
-    tier: environmentName == 'prod' ? 'PremiumV3' : 'Basic'
-    capacity: environmentName == 'prod' ? 3 : 1
+    // Free trial blocks Basic and Standard tiers (VM quota = 0)
+    // P1v3 (PremiumV3) is permitted on free trial — dedicated infrastructure
+    // Cost: ~$0.169/hr = ~$123/mo BUT we are deleting immediately after demo
+    // For a short-lived portfolio demo this is acceptable
+    // ADR-002 documents B2 as the intended dev tier for paid subscriptions
+    name: 'P1v3'
+    tier: 'PremiumV3'
+    capacity: 1
   }
   kind: 'linux'
   properties: {
