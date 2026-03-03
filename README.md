@@ -6,6 +6,7 @@
 [![IaC: Bicep](https://img.shields.io/badge/IaC-Bicep-0078D4)](https://learn.microsoft.com/azure/azure-resource-manager/bicep/)
 [![Platform: Azure](https://img.shields.io/badge/Platform-Azure-0078D4)](https://azure.microsoft.com)
 [![WAF Aligned](https://img.shields.io/badge/WAF-Aligned-green)](https://learn.microsoft.com/azure/well-architected/)
+[![CI](https://github.com/NdiforJoe/orderflow-api-platform/actions/workflows/ci-security-scan.yml/badge.svg)](https://github.com/NdiforJoe/orderflow-api-platform/actions/workflows/ci-security-scan.yml)
 
 ---
 
@@ -13,6 +14,7 @@
 
 - [Business Context](#business-context)
 - [Architecture Overview](#architecture-overview)
+- [Deployed Resources](#deployed-resources)
 - [Azure Well-Architected Framework Alignment](#azure-well-architected-framework-alignment)
 - [Repository Structure](#repository-structure)
 - [Architecture Decision Records](#architecture-decision-records)
@@ -22,8 +24,9 @@
   - [Phase 2 — Networking and Key Vault](#phase-2--networking-and-key-vault)
   - [Phase 3 — Monitoring and App Service](#phase-3--monitoring-and-app-service)
   - [Phase 4 — API Management](#phase-4--api-management)
-  - [Phase 5 — Application and Data Tier](#phase-5--application-and-data-tier)
+  - [Phase 5 — Data Tier](#phase-5--data-tier)
   - [Phase 6 — DevSecOps Pipeline](#phase-6--devsecops-pipeline)
+- [Known Limitations (Dev Environment)](#known-limitations-dev-environment)
 - [Cost Estimates](#cost-estimates)
 - [Cleanup](#cleanup)
 - [Contributing](#contributing)
@@ -51,7 +54,7 @@ A secure, governed Azure-native API platform where:
 - **Zero public backend IPs** — all services sit inside a hub-spoke VNet with private endpoints
 - **Entra ID** handles all authentication (client credentials for B2B, auth code + PKCE for users)
 - **Managed Identity** replaces every stored credential — no secrets in code or config
-- Full platform provisioned in **under 10 minutes** via modular Bicep IaC
+- Full platform provisioned via modular Bicep IaC with a single command
 - **5-gate DevSecOps pipeline** — CodeQL, Snyk, Trivy, DAST, blue-green deploy with auto-rollback
 
 ---
@@ -66,7 +69,7 @@ A secure, governed Azure-native API platform where:
 ### Security and Identity Flow
 
 ![Security and Identity Flow](docs/diagrams/diagram2-security-identity.png)
-*Figure 2: Three auth flows — B2B client credentials, SPA auth code + PKCE, and service-to-service Managed Identity. APIM validates every JWT and strips it before forwarding to the backend, which only ever sees enriched headers.*
+*Figure 2: Three auth flows — B2B client credentials, SPA auth code + PKCE, and service-to-service Managed Identity. APIM validates every JWT and strips it before forwarding to the backend.*
 
 ### DevSecOps CI/CD Pipeline
 
@@ -76,41 +79,33 @@ A secure, governed Azure-native API platform where:
 ### Disaster Recovery Topology
 
 ![DR Topology](docs/diagrams/diagram4-dr-topology.png)
-*Figure 4: Warm standby in paired region (East US 2 → Central US). RTO < 15 min for app tier, < 60 min full platform. SQL geo-replication with < 5s RPO. DR cost = 25% of primary.*
+*Figure 4: Warm standby in paired region (East US 2 → Central US). RTO < 15 min for app tier, < 60 min full platform. SQL geo-replication with < 5s RPO.*
 
 ---
 
-## Deployed Infrastructure — Phase by Phase
+## Deployed Resources
 
-### Phase 2: Networking and Key Vault
+### What is live after all 6 phases
 
-![Deployment Succeeded](docs/screenshots/phase2-01-deployment-succeeded.png)
-*Screenshot 1: Azure portal showing deployment `deploy-orderflow-dev-20260301-2156` in Succeeded state. All 20+ resources provisioned via a single `az deployment sub create` command.*
-
----
-
-![Hub-Spoke VNet Peering Connected](docs/screenshots/phase2-02-vnet-peering-connected.png)
-*Screenshot 2: VNet peering between `vnet-hub-dev` and `vnet-spoke-dev` showing `Connected` and `FullyInSync` state. Hub grants gateway transit so all spoke egress routes through Azure Firewall — the core of ADR-003 zero-trust enforcement.*
-
----
-
-![Key Vault Public Access Disabled](docs/screenshots/phase2-03-keyvault-networking.png)
-*Screenshot 3: Key Vault networking tab showing `Public network access: Disabled`. The only route into this Key Vault is via the private endpoint `pe-kv-orderflow-dev` registered in the hub VNet shared-services subnet. No developer can access this from their laptop — even with valid credentials.*
-
----
-
-![Private DNS Zones](docs/screenshots/phase2-04-private-dns-zones.png)
-*Screenshot 4: Five private DNS zones deployed and linked to both hub and spoke VNets. When App Service resolves `kv-orderflow-dev-dev001.vault.azure.net`, DNS returns the private endpoint IP (10.0.1.x) instead of the public Azure IP — ensuring traffic never leaves the VNet.*
-
----
-
-![VS Code Bicep Networking Module](docs/screenshots/phase2-05-vscode-bicep.png)
-*Screenshot 5: `networking.bicep` in VS Code showing the NSG deny-all rule at priority 4096 and the App Service subnet delegation. Every architectural decision in ADR-003 is expressed directly in code — no manual portal steps.*
-
----
-
-![GitHub Repository Structure](docs/screenshots/phase2-06-github-repo.png)
-*Screenshot 6: GitHub repository showing clean separation of concerns — `/infra/bicep` for IaC, `/docs/adrs` for architecture decisions, `/src` for application code, `/apim-policies` for gateway configuration. Architecture as code, not architecture as PowerPoint.*
+| Resource | Name | Tier | Notes |
+|---|---|---|---|
+| Resource Group (workload) | `rg-orderflow-dev` | — | East US 2 |
+| Resource Group (network) | `rg-orderflow-network-dev` | — | East US 2 |
+| Hub VNet | `vnet-hub-dev` | — | 10.0.0.0/16 |
+| Spoke VNet | `vnet-spoke-dev` | — | 10.1.0.0/16 |
+| NSGs | `nsg-apim-dev`, `nsg-app-dev`, `nsg-data-dev` | — | Deny-all baseline |
+| Private DNS Zones | 5 zones | — | KV, SQL, Redis, SB, ACR |
+| Key Vault | `kv-orderflow-dev-dev001` | Standard | Private endpoint, RBAC mode |
+| Log Analytics | `log-orderflow-dev` | — | 30-day retention |
+| App Insights | `appi-orderflow-dev` | — | Linked to Log Analytics |
+| App Service Plan | `asp-orderflow-dev` | P1v4 | Linux |
+| App Service | `app-orderflow-dev` | — | System MI, staging slot |
+| API Management | `apim-orderflow-dev` | Developer | Internal VNet, `10.0.2.4` |
+| Redis Cache | `redis-orderflow-dev` | C1 Standard | Private endpoint |
+| Service Bus | `sb-orderflow-dev` | Standard | Orders topic + subscription |
+| SQL Server | `sql-orderflow-dev` | — | Entra ID only auth |
+| SQL Database | `db-orderflow-dev` | GP_S_Gen5 | Serverless, auto-pause 60 min |
+| Container Registry | `acrdevdev001` | Basic | Admin disabled, AcrPull RBAC |
 
 ---
 
@@ -118,10 +113,10 @@ A secure, governed Azure-native API platform where:
 
 | Pillar | Decision | Evidence |
 |---|---|---|
-| **Reliability** | Zone-redundant App Service (3 AZs), SQL geo-replication, warm standby DR | ADR-005, `appservice.bicep` |
-| **Security** | Zero-trust network (no public IPs), Managed Identity everywhere, APIM OWASP policies | ADR-003, ADR-004, `networking.bicep`, APIM policy XML |
-| **Cost Optimisation** | Dev tiers ~$108/mo, 1-yr Reserved Instance modelled for prod, auto-scale, Redis cache reduces SQL reads | ADR-001, ADR-002, `dev.bicepparam` |
-| **Operational Excellence** | 100% IaC (Azure Policy denies manual portal changes), GitOps, blue-green deployments, ADRs as living docs | ADR-006, `main.bicep`, GitHub Actions pipelines |
+| **Reliability** | Zone-redundant App Service, SQL geo-replication, warm standby DR, blue-green deployments with auto-rollback | ADR-005, `appservice.bicep` |
+| **Security** | Zero-trust network (no public IPs), Managed Identity everywhere, APIM OWASP policies, no stored credentials in pipeline | ADR-003, ADR-004, `networking.bicep`, APIM policy XML |
+| **Cost Optimisation** | Dev tiers ~$117/mo, Serverless SQL auto-pauses in dev, Redis cache reduces SQL reads, 1-yr RI modelled for prod | ADR-001, ADR-002, `dev.bicepparam` |
+| **Operational Excellence** | 100% IaC, GitOps, ADRs as living docs, 5-gate CI, DAST in CD, auto-rollback on health check failure | ADR-006, `main.bicep`, GitHub Actions pipelines |
 | **Performance Efficiency** | APIM response caching (60s TTL), Redis cache-aside pattern, auto-scale 3–10 instances on CPU > 70% | `order-api-policy.xml`, `appservice.bicep` |
 
 ---
@@ -135,40 +130,40 @@ orderflow-api-platform/
 │   └── bicep/
 │       ├── main.bicep                    # Subscription-scope orchestrator
 │       ├── parameters/
-│       │   ├── dev.bicepparam            # Dev environment values
-│       │   └── prod.bicepparam           # Prod environment values
+│       │   ├── dev.bicepparam
+│       │   └── prod.bicepparam
 │       └── modules/
 │           ├── networking.bicep          # Hub-spoke VNets, NSGs, peering, DNS zones
 │           ├── keyvault.bicep            # Key Vault, RBAC, private endpoint
-│           ├── monitoring.bicep          # Log Analytics, App Insights, alert rules
+│           ├── monitoring.bicep          # Log Analytics, App Insights, action groups
 │           ├── appservice.bicep          # App Service Plan, Web App, MI, slots
-│           ├── apim.bicep                # API Management, products, subscriptions
-│           ├── sql.bicep                 # Azure SQL, geo-replication
-│           ├── redis.bicep               # Azure Cache for Redis
-│           ├── servicebus.bicep          # Service Bus, Geo-DR
-│           ├── security.bicep            # Defender for Cloud plans
-│           └── rbac.bicep                # All RBAC assignments
+│           ├── apim.bicep                # APIM, products, APIs, logger, named values
+│           ├── sql.bicep                 # Azure SQL Server + Serverless database
+│           ├── redis.bicep               # Azure Cache for Redis, private endpoint
+│           ├── servicebus.bicep          # Service Bus, orders topic, subscription
+│           ├── acr.bicep                 # Container Registry, AcrPull RBAC
+│           └── rbac.bicep                # Key Vault Secrets User role assignments
 │
 ├── src/
 │   └── OrderManagement.Api/
-│       ├── Program.cs                    # .NET 8 Minimal API, DI wiring
-│       ├── Endpoints/
-│       │   └── OrderEndpoints.cs         # CRUD endpoints, cache-aside pattern
-│       ├── Models/                       # Order, LineItem, Customer
-│       ├── Data/                         # EF Core DbContext
-│       └── Dockerfile                    # Multi-stage, non-root, Alpine
+│       ├── Program.cs                    # .NET 8 Minimal API, DefaultAzureCredential
+│       ├── Endpoints/OrderEndpoints.cs   # CRUD, cache-aside, tenant-scoped queries
+│       ├── Models/Order.cs               # Domain models + DTOs
+│       ├── Data/OrderDbContext.cs        # EF Core, tenant-scoped indexes
+│       ├── Services/OrderService.cs      # Cache-aside, audit trail
+│       └── Dockerfile                    # Multi-stage Alpine, non-root uid 1000
 │
 ├── apim-policies/
-│   ├── global-policy.xml                 # All APIs: correlation ID, security headers, IP filter
+│   ├── global-policy.xml                 # Correlation ID, security headers, size limit
 │   ├── order-api-policy.xml              # JWT validate, rate limit, caching, OWASP
 │   └── products/
-│       ├── internal-product-policy.xml   # Delegated auth (SPA users)
-│       └── partner-product-policy.xml    # Client credentials (B2B)
+│       ├── internal-product-policy.xml   # 500 req/min
+│       └── partner-product-policy.xml    # 60 req/min, 100k/month quota
 │
 ├── .github/
 │   └── workflows/
-│       ├── ci-security-scan.yml          # PR gate: CodeQL, Snyk, Trivy, Bicep lint
-│       └── cd-prod.yml                   # Deploy: dev → DAST → approval → prod blue-green
+│       ├── ci-security-scan.yml          # Build, CodeQL, Snyk, Trivy, Bicep lint
+│       └── cd-prod.yml                   # OIDC, ACR push, dev deploy, DAST, blue-green
 │
 ├── docs/
 │   ├── adrs/
@@ -178,12 +173,12 @@ orderflow-api-platform/
 │   │   ├── ADR-004-authentication-strategy.md
 │   │   ├── ADR-005-dr-strategy.md
 │   │   └── ADR-006-iac-tooling.md
-│   ├── diagrams/                         # Draw.io XML source + PNG exports
-│   └── screenshots/                      # Portal screenshots per phase (see below)
+│   ├── diagrams/
+│   └── screenshots/
 │
 └── scripts/
-    ├── setup-entra-apps.sh               # Creates Entra ID app registrations
-    ├── seed-test-data.ps1                # Seeds orders for demo
+    ├── seed-keyvault-secrets.ps1         # Seeds SQL, Redis, SB connection strings
+    ├── setup-entra-apps.ps1              # Creates Order API, Partner, SPA app regs
     └── cleanup.ps1                       # Tears down all resources
 ```
 
@@ -191,16 +186,14 @@ orderflow-api-platform/
 
 ## Architecture Decision Records
 
-All major design choices are documented as ADRs with context, alternatives considered, trade-offs, and rationale. This is the difference between an architecture that exists and one that can be understood, challenged, and evolved.
-
 | ADR | Decision | Key Trade-off |
 |---|---|---|
-| [ADR-001](docs/adrs/ADR-001-apim-tier-selection.md) | APIM Premium (prod) / Developer (dev) | Internal VNet mode required for zero-trust — rules out Consumption and Standard tiers |
-| [ADR-002](docs/adrs/ADR-002-compute-platform.md) | App Service Premium v3 | Deployment slots for blue-green + zone redundancy; AKS rejected — operational overhead without benefit for single service |
-| [ADR-003](docs/adrs/ADR-003-network-topology.md) | Hub-spoke with Azure Firewall | Reusable hub pattern vs simpler flat VNet; Firewall Premium cost (~$2,500/mo prod) justified by IDPS + TLS inspection |
-| [ADR-004](docs/adrs/ADR-004-authentication-strategy.md) | Entra ID with Managed Identity everywhere | Client credentials for B2B, auth code + PKCE for users, MI for service-to-service — zero stored secrets |
-| [ADR-005](docs/adrs/ADR-005-dr-strategy.md) | Warm standby (not hot active-active) | Hot standby doubles cost ($1,800/mo extra); warm standby achieves RTO < 1hr at 25% of primary cost |
-| [ADR-006](docs/adrs/ADR-006-iac-tooling.md) | Bicep over Terraform | Pure Azure workload — no state file management, first-class Azure features; Terraform preferred for multi-cloud |
+| [ADR-001](docs/adrs/ADR-001-apim-tier-selection.md) | APIM Premium (prod) / Developer (dev) | Internal VNet mode required — rules out Consumption and Standard tiers |
+| [ADR-002](docs/adrs/ADR-002-compute-platform.md) | App Service Premium v4 | Deployment slots for blue-green + zone redundancy; AKS rejected — overhead without benefit for single service |
+| [ADR-003](docs/adrs/ADR-003-network-topology.md) | Hub-spoke with Azure Firewall | Reusable hub pattern; Firewall Premium justified by IDPS + TLS inspection in prod |
+| [ADR-004](docs/adrs/ADR-004-authentication-strategy.md) | Entra ID + Managed Identity everywhere | Client credentials (B2B), auth code + PKCE (users), MI (service-to-service) — zero stored secrets |
+| [ADR-005](docs/adrs/ADR-005-dr-strategy.md) | Warm standby — not active-active | Achieves RTO < 1hr at 25% of active-active cost (+$280/mo vs +$1,800/mo) |
+| [ADR-006](docs/adrs/ADR-006-iac-tooling.md) | Bicep over Terraform | Pure Azure workload — no state file management, first-class Azure feature support |
 
 ---
 
@@ -212,32 +205,14 @@ All major design choices are documented as ADRs with context, alternatives consi
 |---|---|---|
 | Azure CLI | 2.60+ | [aka.ms/installazurecliwindows](https://aka.ms/installazurecliwindows) |
 | Bicep CLI | 0.28+ | `az bicep install` |
-| .NET SDK | 8.0+ | [dotnet.microsoft.com/download/dotnet/8.0](https://dotnet.microsoft.com/download/dotnet/8.0) |
-| Docker Desktop | 24.0+ | [docker.com/products/docker-desktop](https://www.docker.com/products/docker-desktop) |
+| .NET SDK | 8.0+ | [dotnet.microsoft.com](https://dotnet.microsoft.com/download/dotnet/8.0) |
+| Docker Desktop | 24.0+ | [docker.com](https://www.docker.com/products/docker-desktop) |
 | Git | 2.40+ | [git-scm.com](https://git-scm.com) |
 | VS Code | Latest | [code.visualstudio.com](https://code.visualstudio.com) |
 
-### VS Code Extensions
-
-```
-ms-azuretools.vscode-bicep
-ms-dotnettools.csdevkit
-ms-vscode.vscode-node-azure-pack
-eamodio.gitlens
-```
-
-Install all at once:
-
-```powershell
-code --install-extension ms-azuretools.vscode-bicep
-code --install-extension ms-dotnettools.csdevkit
-code --install-extension ms-vscode.vscode-node-azure-pack
-code --install-extension eamodio.gitlens
-```
-
 ### Azure Requirements
 
-- Azure subscription (free trial works — ~$200 credit)
+- Azure subscription (free trial works — ~$200 credit lasts ~50 days at dev burn rate)
 - Contributor role on subscription
 - Permission to create App Registrations in Entra ID
 
@@ -255,15 +230,17 @@ az account show --output table
 
 ## Step-by-Step Deployment Guide
 
-> **Important:** Run every command from the repo root directory. All commands are PowerShell on Windows.
+> **Important:** Run all commands from the repo root. All commands are PowerShell on Windows.
+
+---
 
 ### Phase 1 — Environment Setup
 
-**What this phase does:** Installs all tools, creates the GitHub repository, and scaffolds the folder structure.
+**What this phase does:** Installs tools, clones the repo, registers Azure resource providers.
 
 ```powershell
 # 1. Clone the repo
-git clone https://github.com/YOUR-USERNAME/orderflow-api-platform.git
+git clone https://github.com/NdiforJoe/orderflow-api-platform.git
 cd orderflow-api-platform
 
 # 2. Log in to Azure
@@ -282,6 +259,7 @@ foreach ($provider in $providers) {
     Write-Host "Registering $provider..."
     az provider register --namespace $provider --wait
 }
+Write-Host "All providers registered" -ForegroundColor Green
 ```
 
 ---
@@ -289,190 +267,330 @@ foreach ($provider in $providers) {
 ### Phase 2 — Networking and Key Vault
 
 **What this phase deploys:**
-- Hub VNet (10.0.0.0/16) with 4 subnets: AzureFirewallSubnet, snet-apim, snet-shared-services, AzureBastionSubnet
-- Spoke VNet (10.1.0.0/16) with 3 subnets: snet-app, snet-integration, snet-data
-- 3 NSGs with explicit deny-all rules (zero-trust enforcement)
-- Bidirectional VNet peering
+- Hub VNet (10.0.0.0/16): AzureFirewallSubnet, snet-apim, snet-shared-services, AzureBastionSubnet
+- Spoke VNet (10.1.0.0/16): snet-app, snet-integration, snet-data
+- 3 NSGs with explicit deny-all rules at priority 4096
+- Bidirectional VNet peering with gateway transit
 - 5 Private DNS zones linked to both VNets
 - Key Vault (RBAC mode, public access disabled, private endpoint)
+- Log Analytics Workspace + Application Insights + Action Group
 
 **Cost: ~$0.08/day**
 
 ```powershell
-# 1. Set your variables
-$SUBSCRIPTION_ID = (az account show --query id -o tsv)
-$MY_OBJECT_ID    = (az ad signed-in-user show --query id -o tsv)
-
-# 2. Update parameters file with your Object ID
-(Get-Content infra\bicep\parameters\dev.bicepparam) `
-    -replace 'REPLACE-WITH-YOUR-OBJECT-ID', $MY_OBJECT_ID |
-    Set-Content infra\bicep\parameters\dev.bicepparam
-
-# 3. Lint and validate
+# Lint
 az bicep lint --file infra\bicep\main.bicep
 
-# 4. What-if dry run (no resources created)
+# What-if dry run
 az deployment sub what-if `
     --location "eastus2" `
     --template-file infra\bicep\main.bicep `
     --parameters infra\bicep\parameters\dev.bicepparam
 
-# 5. Deploy
+# Deploy
 az deployment sub create `
     --location "eastus2" `
     --template-file infra\bicep\main.bicep `
     --parameters infra\bicep\parameters\dev.bicepparam `
     --name "deploy-orderflow-dev-$(Get-Date -Format 'yyyyMMdd-HHmm')"
 
-# 6. Verify
+# Verify
 az network vnet list --resource-group rg-orderflow-network-dev --output table
-az network vnet peering list --vnet-name vnet-hub-dev --resource-group rg-orderflow-network-dev --output table
+az network vnet peering list `
+    --vnet-name vnet-hub-dev `
+    --resource-group rg-orderflow-network-dev --output table
 az keyvault list --resource-group rg-orderflow-dev --output table
 az network private-endpoint list --resource-group rg-orderflow-dev --output table
 ```
 
-**Expected output:** Both VNets listed, peering in `Connected` state, Key Vault listed, private endpoint `Succeeded`.
+**Expected:** Both VNets listed, peering in `Connected` state, Key Vault listed, private endpoint `Succeeded`.
 
-**Screenshots to capture after this phase:**
-
-| File | Where in Portal | What it proves |
-|---|---|---|
-| `docs/screenshots/phase2-01-deployment-succeeded.png` | Subscriptions → Deployments | IaC deployed real infrastructure |
-| `docs/screenshots/phase2-02-vnet-peering-connected.png` | rg-orderflow-network-dev → vnet-hub-dev → Peerings | Hub-spoke topology working (ADR-003) |
-| `docs/screenshots/phase2-03-keyvault-networking.png` | rg-orderflow-dev → Key Vault → Networking | Zero-trust: public access disabled (ADR-004) |
-| `docs/screenshots/phase2-04-private-dns-zones.png` | rg-orderflow-network-dev → filter by Private DNS zone | Private connectivity for all PaaS services |
-| `docs/screenshots/phase2-05-vscode-bicep.png` | VS Code — networking.bicep open | Architecture expressed as code |
-| `docs/screenshots/phase2-06-github-repo.png` | github.com/YOUR-USERNAME/orderflow-api-platform | Clean repo structure |
+> **Quota note:** If you hit `SubscriptionIsOverQuotaForSku`, go to portal → Subscriptions → Usage + quotas → request an increase on the `P0v4-P5mv4 VMs` row. Auto-approves instantly on Pay-As-You-Go.
 
 ---
 
 ### Phase 3 — Monitoring and App Service
 
-> Coming in next implementation phase
-
 **What this phase deploys:**
-- Log Analytics Workspace (30-day retention, 2GB/day cap)
-- Application Insights (linked to Log Analytics)
-- 4 KQL-based alert rules (error rate, latency P95, volume anomaly, auth failure spike)
-- App Service Plan B2
-- Web App with System-Assigned Managed Identity
-- VNet integration (routes all egress through spoke VNet)
+- App Service Plan P1v4 (Linux)
+- Web App with system-assigned Managed Identity
+- VNet integration → snet-app in spoke VNet
 - Staging deployment slot (blue-green ready)
+- MI → Key Vault Secrets User RBAC (production + staging slots)
+- Diagnostic settings → Log Analytics
 
-**Cost: +~$0.43/day (App Service B2 ~$13/mo)**
+**Cost: ~$0.98/day cumulative**
+
+```powershell
+# Same incremental deploy command — Bicep only creates new resources
+az deployment sub create `
+    --location "eastus2" `
+    --template-file infra\bicep\main.bicep `
+    --parameters infra\bicep\parameters\dev.bicepparam `
+    --name "deploy-orderflow-dev-$(Get-Date -Format 'yyyyMMdd-HHmm')"
+
+# Verify
+az webapp show `
+    --name app-orderflow-dev `
+    --resource-group rg-orderflow-dev `
+    --query "{name:name, state:state, hostname:defaultHostName}" `
+    --output table
+
+az webapp deployment slot list `
+    --name app-orderflow-dev `
+    --resource-group rg-orderflow-dev --output table
+```
+
+**Expected:** Web app in `Running` state, staging slot listed.
 
 ---
 
 ### Phase 4 — API Management
 
-> Coming in next implementation phase
-
 **What this phase deploys:**
-- APIM Developer tier (internal VNet mode)
-- Global policy: correlation ID, security headers, IP filtering, payload size limit
-- Order API policy: JWT validation, rate limiting, response caching, OWASP mitigations
-- Products: Internal (delegated auth) and Partner (client credentials)
-- App Insights logger
+- APIM Developer tier, internal VNet mode (private IP: `10.0.2.4`)
+- System-assigned Managed Identity
+- App Insights logger linked to `appi-orderflow-dev`
+- Named values: `backend-base-url`, `environment-name`
+- Backend pointing to App Service
+- Products: `internal` (500 req/min), `partner` (60 req/min + 100k/month quota)
+- Order API at path `/orders`, subscription required
+- TLS 1.0/1.1/SSL3 and TripleDes168 disabled
 
-**Cost: +~$1.63/day (APIM Developer ~$49/mo)**
+**Cost: ~$1.63/day cumulative**
+
+> **Important:** APIM Developer tier takes **45–60 minutes** to provision. Do not cancel the deployment command.
+
+```powershell
+az deployment sub create `
+    --location "eastus2" `
+    --template-file infra\bicep\main.bicep `
+    --parameters infra\bicep\parameters\dev.bicepparam `
+    --name "deploy-orderflow-dev-$(Get-Date -Format 'yyyyMMdd-HHmm')"
+
+# Verify
+az apim show `
+    --name apim-orderflow-dev `
+    --resource-group rg-orderflow-dev `
+    --query "properties.provisioningState" --output tsv
+```
+
+**Expected:** `Succeeded`
 
 ---
 
-### Phase 5 — Application and Data Tier
-
-> Coming in next implementation phase
+### Phase 5 — Data Tier
 
 **What this phase deploys:**
-- .NET 8 Order Management API (containerised, deployed to App Service)
-- Azure SQL Database (Serverless, auto-pause)
-- Azure Cache for Redis (C0 Basic)
-- Azure Service Bus (Standard tier)
-- Full Entra ID app registrations (API, partner app, SPA)
+- Azure SQL Server (Entra ID only auth, no SQL auth, public access disabled)
+- Azure SQL Database `db-orderflow-dev` (Serverless GP_S_Gen5, auto-pause 60 min)
+- Azure Cache for Redis C1 Standard (SSL only, LRU eviction, private endpoint)
+- Service Bus Standard namespace (Entra ID only, no SAS keys)
+- `orders` topic: 14-day TTL, duplicate detection
+- `order-processing` subscription: dead-letter after 3 retries
+- Container Registry Basic (admin disabled, AcrPull RBAC for App Service MI)
+- Service Bus Data Sender RBAC for App Service MI
 
-**Cost: +~$1.03/day (~$31/mo for SQL + Redis + Service Bus)**
+**Cost: ~$3.90/day cumulative (~$117/month)**
+
+```powershell
+az deployment sub create `
+    --location "eastus2" `
+    --template-file infra\bicep\main.bicep `
+    --parameters infra\bicep\parameters\dev.bicepparam `
+    --name "deploy-orderflow-dev-$(Get-Date -Format 'yyyyMMdd-HHmm')"
+
+# Verify all data resources
+az sql db show `
+    --server sql-orderflow-dev --resource-group rg-orderflow-dev `
+    --name db-orderflow-dev `
+    --query "{name:name, status:status, sku:currentSku.name}" --output table
+
+az redis show `
+    --name redis-orderflow-dev --resource-group rg-orderflow-dev `
+    --query "{name:name, provisioningState:provisioningState}" --output table
+
+az servicebus namespace show `
+    --name sb-orderflow-dev --resource-group rg-orderflow-dev `
+    --query "{name:name, status:status}" --output table
+
+az acr show `
+    --name acrdevdev001 --resource-group rg-orderflow-dev `
+    --query "{name:name, loginServer:loginServer}" --output table
+```
+
+**After deployment — seed Key Vault secrets:**
+
+```powershell
+.\scripts\seed-keyvault-secrets.ps1 -EnvironmentName dev
+```
+
+**Create Entra ID app registrations:**
+
+```powershell
+.\scripts\setup-entra-apps.ps1
+```
+
+Save the output — you will need `tenant-id` and `order-api-client-id` to update APIM named values.
 
 ---
 
 ### Phase 6 — DevSecOps Pipeline
 
-> Coming in next implementation phase
-
 **What this phase sets up:**
-- GitHub Actions CI pipeline: CodeQL SAST, Snyk SCA, Trivy container scan, Trivy IaC scan, Bicep lint + what-if
-- GitHub Actions CD pipeline: deploy dev → DAST (OWASP ZAP) → manual approval gate → blue-green prod deploy → auto-rollback
-- OIDC federated credentials (no stored service principal secrets)
-- APIM backup on every deployment
+- GitHub Actions CI: Build → CodeQL SAST → Snyk SCA → Trivy container + IaC scan → Bicep lint
+- GitHub Actions CD: OIDC login → ACR push → Dev deploy → DAST (OWASP ZAP) → Manual approval → Blue-green slot swap → Auto-rollback
+- OIDC federated credentials — zero stored Azure credentials in GitHub
+- Branch protection: CI must pass before merge to main
+
+#### Step 1 — Create OIDC app registration
+
+```powershell
+$app = (az ad app create `
+    --display-name "orderflow-github-actions" | ConvertFrom-Json)
+$appId = $app.appId
+
+az ad sp create --id $appId --output none
+$spObjectId = (az ad sp show --id $appId --query id -o tsv)
+
+az role assignment create `
+    --assignee $spObjectId `
+    --role "Contributor" `
+    --scope "/subscriptions/$(az account show --query id -o tsv)" `
+    --output none
+
+Write-Host "App ID: $appId" -ForegroundColor Green
+```
+
+#### Step 2 — Create federated credentials
+
+```powershell
+$githubUsername = "YOUR-GITHUB-USERNAME"
+$repoName = "orderflow-api-platform"
+
+@"
+{
+  "name": "github-actions-main",
+  "issuer": "https://token.actions.githubusercontent.com",
+  "subject": "repo:$githubUsername/${repoName}:ref:refs/heads/main",
+  "description": "GitHub Actions OIDC for main branch",
+  "audiences": ["api://AzureADTokenExchange"]
+}
+"@ | Set-Content -Path "federated-main.json" -Encoding UTF8
+az ad app federated-credential create --id $appId --parameters federated-main.json --output none
+
+@"
+{
+  "name": "github-actions-pr",
+  "issuer": "https://token.actions.githubusercontent.com",
+  "subject": "repo:$githubUsername/${repoName}:pull_request",
+  "description": "GitHub Actions OIDC for pull requests",
+  "audiences": ["api://AzureADTokenExchange"]
+}
+"@ | Set-Content -Path "federated-pr.json" -Encoding UTF8
+az ad app federated-credential create --id $appId --parameters federated-pr.json --output none
+
+Remove-Item federated-main.json, federated-pr.json
+Write-Host "Federated credentials created" -ForegroundColor Green
+```
+
+#### Step 3 — Configure GitHub
+
+1. **Add secrets:** repo → Settings → Secrets and variables → Actions
+   - `AZURE_CLIENT_ID` → value from Step 1
+   - `SNYK_TOKEN` → from [snyk.io](https://snyk.io) → Account Settings → Auth Token
+
+2. **Create environments:** Settings → Environments
+   - `dev` — no protection rules
+   - `production` — Required reviewers: add yourself
+
+3. **Enable branch protection:** Settings → Branches → Add rule on `main`
+   - Required status checks: `Build`, `CodeQL SAST`, `Bicep Lint`
+   - Do not allow bypassing
+
+4. **Trigger first CI run:** Actions → CI Security Scan → Run workflow
+
+**Expected:** All 5 gates green.
+
+---
+
+## Known Limitations (Dev Environment)
+
+Documented accepted trade-offs. All resolved in prod.
+
+| Limitation | Reason | Prod Resolution |
+|---|---|---|
+| SQL Server in `westus2` | East US 2 region quota restriction at time of initial deployment | Deploy SQL in `eastus2` once quota available |
+| SQL private endpoint disabled | Cross-region private endpoints not supported | Re-enable once SQL co-located with VNet |
+| Service Bus private endpoint disabled | Standard tier does not support private endpoints | Upgrade to Premium tier in prod |
+| ACR private endpoint disabled | Basic tier does not support private endpoints | Upgrade to Premium tier in prod |
+| No Azure Firewall | Cost (~$2,500/mo) prohibitive for dev | Deploy Firewall Premium in prod (ADR-003) |
+| App Service P1v4 | East US 2 only had v4 quota available on new subscription | Both tiers equivalent; v4 is newer generation |
 
 ---
 
 ## Cost Estimates
 
-### Development Environment (~$108/month total)
+### Development Environment (~$117/month)
 
 | Resource | Tier | Monthly Cost |
 |---|---|---|
-| APIM | Developer | $49 |
-| App Service | B2 | $13 |
-| Redis | C0 Basic | $16 |
-| Service Bus | Standard | $10 |
-| Key Vault | Standard | $5 |
-| Log Analytics | Pay-per-GB (~2GB/day cap) | $5 |
-| SQL Database | Serverless (auto-pause) | $5 |
-| Private DNS Zones (5) | Standard | $3 |
-| Private Endpoint | Standard | $7 |
-| **Total** | | **~$108/month** |
+| APIM | Developer | ~$49 |
+| App Service Plan | P1v4 | ~$49 |
+| Redis Cache | C1 Standard | ~$55 |
+| SQL Database | Serverless GP_S_Gen5 (auto-pause) | ~$5 |
+| Service Bus | Standard | ~$10 |
+| Key Vault | Standard | ~$1 |
+| Log Analytics | Pay-per-GB | ~$5 |
+| Container Registry | Basic | ~$5 |
+| Private Endpoints + DNS | Standard | ~$10 |
+| **Total** | | **~$117/month (~$3.90/day)** |
 
-### Production Environment (~$890/month)
+> **Free trial:** ~$200 credit lasts approximately 50 days at this burn rate.
+
+### Production Environment (estimated)
 
 | Resource | Tier | Monthly Cost |
 |---|---|---|
-| APIM | Premium 1 unit | $2,800 (→ ~$1,680 with 1-yr RI) |
-| App Service | Premium v3 P1v3 × 3 (zone redundant) | $270 |
-| SQL Database | Business Critical | $400 |
-| Service Bus | Premium | $700 |
-| Redis | P1 | $250 |
-| Azure Firewall | Premium | $2,500 |
+| APIM | Premium 1 unit (1-yr RI) | ~$1,680 |
+| App Service | P1v3 × 3 zone-redundant | ~$270 |
+| SQL Database | Business Critical | ~$400 |
+| Azure Firewall | Premium | ~$2,500 |
+| Redis | P1 Premium | ~$250 |
+| Service Bus | Premium | ~$700 |
 
-> Note: Production cost is illustrative. In a real engagement, Azure Firewall and APIM Premium Reserved Instances reduce total cost significantly. Dev environment intentionally omits Firewall (uses NSGs only) — this is a documented accepted risk in ADR-003.
+> Reserved Instances on APIM Premium reduce cost ~40%. Azure Firewall is the largest line item — justified by IDPS + TLS inspection requirement in ADR-003.
 
 ---
 
 ## Cleanup
 
-**Tear down all resources immediately (stops all charges):**
-
 ```powershell
-# Delete both resource groups - cascades to all child resources
 az group delete --name "rg-orderflow-network-dev" --yes --no-wait
 az group delete --name "rg-orderflow-dev" --yes --no-wait
 
-Write-Host "Cleanup initiated. Resources deleting in background (~3 min)." -ForegroundColor Yellow
-```
+Write-Host "Cleanup initiated. Resources deleting in background (~3-5 min)." -ForegroundColor Yellow
 
-**Verify everything is gone:**
-
-```powershell
+# Verify
 az group list --query "[?contains(name, 'orderflow')]" --output table
 ```
 
-Should return empty after 3-5 minutes.
-
-> Key Vault has soft-delete enabled with 7-day retention in dev. If you redeploy within 7 days, the deployment will fail with a name conflict. Purge it first:
+> **Key Vault soft-delete:** 7-day retention. If redeploying within 7 days, purge first:
 > ```powershell
 > az keyvault purge --name kv-orderflow-dev-dev001 --location eastus2
 > ```
+
+> **APIM re-deploy:** Developer tier takes 45–60 minutes to re-provision.
 
 ---
 
 ## Contributing
 
-This repo is designed to be forked and built upon. If you implement additional phases or extend it for your own use case, please open a PR.
-
-**When contributing:**
 - Add an ADR for any new architectural decision
-- Update the WAF alignment table if a new pillar decision is made
+- Update the WAF alignment table for any new pillar decision
 - Add screenshots for any new phase you complete
-- Keep Bicep modules single-responsibility (one module per resource type)
+- Keep Bicep modules single-responsibility — one module per resource type
+- All CI gates must pass before merging to main
 
 ---
 
