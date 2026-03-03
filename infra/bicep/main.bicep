@@ -11,6 +11,9 @@ param location string = 'eastus2'
 @maxLength(6)
 param uniqueSuffix string
 
+@description('Entra ID Object ID for SQL admin group')
+param sqlAdminObjectId string = ''
+
 var networkRgName  = 'rg-orderflow-network-${environmentName}'
 var workloadRgName = 'rg-orderflow-${environmentName}'
 var tags = {
@@ -89,6 +92,59 @@ module apim 'modules/apim.bicep' = {
     backendHostname: appService.outputs.webAppHostname
   }
 }
+
+module sql 'modules/sql.bicep' = {
+  name: 'deploy-sql-${environmentName}'
+  scope: workloadRg
+  params: {
+    environmentName: environmentName
+    location: location
+    dataSubnetId: networking.outputs.dataSubnetId
+    sqlDnsZoneId: networking.outputs.sqlDnsZoneId
+    logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsWorkspaceId
+    sqlAdminObjectId: sqlAdminObjectId != '' ? sqlAdminObjectId : subscription().tenantId
+    sqlAdminDisplayName: 'orderflow-sql-admins'
+  }
+}
+
+module redis 'modules/redis.bicep' = {
+  name: 'deploy-redis-${environmentName}'
+  scope: workloadRg
+  params: {
+    environmentName: environmentName
+    location: location
+    dataSubnetId: networking.outputs.dataSubnetId
+    redisDnsZoneId: networking.outputs.redisDnsZoneId
+    logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsWorkspaceId
+  }
+}
+
+module serviceBus 'modules/servicebus.bicep' = {
+  name: 'deploy-servicebus-${environmentName}'
+  scope: workloadRg
+  params: {
+    environmentName: environmentName
+    location: location
+    integrationSubnetId: networking.outputs.integrationSubnetId
+    serviceBusDnsZoneId: networking.outputs.serviceBusDnsZoneId
+    logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsWorkspaceId
+    appServicePrincipalId: appService.outputs.webAppPrincipalId
+  }
+}
+
+module acr 'modules/acr.bicep' = {
+  name: 'deploy-acr-${environmentName}'
+  scope: workloadRg
+  params: {
+    environmentName: environmentName
+    uniqueSuffix: uniqueSuffix
+    location: location
+    appServicePrincipalId: appService.outputs.webAppPrincipalId
+    logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsWorkspaceId
+  }
+}
+
+// RBAC — Key Vault Secrets User for App Service MIs
 module prodSlotKvRbac 'modules/rbac.bicep' = {
   name: 'deploy-prod-kv-rbac-${environmentName}'
   scope: workloadRg
@@ -109,6 +165,10 @@ module stagingSlotKvRbac 'modules/rbac.bicep' = {
   }
 }
 
+// =============================================================================
+// OUTPUTS
+// =============================================================================
+
 output networkRgName     string = networkRg.name
 output workloadRgName    string = workloadRg.name
 output hubVnetId         string = networking.outputs.hubVnetId
@@ -120,6 +180,10 @@ output appInsightsName   string = monitoring.outputs.appInsightsName
 output webAppName        string = appService.outputs.webAppName
 output webAppHostname    string = appService.outputs.webAppHostname
 output webAppPrincipalId string = appService.outputs.webAppPrincipalId
-output apimName        string = apim.outputs.apimName
-output apimGatewayUrl  string = apim.outputs.apimGatewayUrl
-output apimPrincipalId string = apim.outputs.apimPrincipalId
+output apimName          string = apim.outputs.apimName
+output apimGatewayUrl    string = apim.outputs.apimGatewayUrl
+output sqlServerName     string = sql.outputs.sqlServerName
+output sqlDatabaseName   string = sql.outputs.sqlDatabaseName
+output redisName         string = redis.outputs.redisName
+output serviceBusName    string = serviceBus.outputs.serviceBusName
+output acrLoginServer    string = acr.outputs.acrLoginServer
