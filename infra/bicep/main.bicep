@@ -1,6 +1,7 @@
 // =============================================================================
 // main.bicep — Subscription-scope orchestrator
-// Phases deployed: Networking, Key Vault, Monitoring, App Service
+// Deployment order: networking → monitoring → keyVault → appService → rbac
+// Circular dependency resolved: RBAC assigned AFTER both KV and AppService deploy
 // =============================================================================
 
 targetScope = 'subscription'
@@ -15,9 +16,6 @@ param location string = 'eastus2'
 @description('Unique suffix for globally unique resource names')
 @maxLength(6)
 param uniqueSuffix string
-
-@description('Your Entra ID Object ID — granted Key Vault Admin for secret seeding')
-param adminObjectId string
 
 @description('Alert notification email (optional)')
 param alertEmailAddress string = ''
@@ -65,7 +63,8 @@ module networking 'modules/networking.bicep' = {
 }
 
 // =============================================================================
-// MONITORING — deployed before App Service so connection string is ready
+// MONITORING
+// Deployed before App Service so connection string is available as a param
 // =============================================================================
 
 module monitoring 'modules/monitoring.bicep' = {
@@ -80,6 +79,8 @@ module monitoring 'modules/monitoring.bicep' = {
 
 // =============================================================================
 // KEY VAULT
+// No MI principal ID here — RBAC assigned below after appService deploys
+// This breaks the circular dependency: KV no longer needs AppService output
 // =============================================================================
 
 module keyVault 'modules/keyvault.bicep' = {
@@ -90,17 +91,16 @@ module keyVault 'modules/keyvault.bicep' = {
     location: location
     uniqueSuffix: uniqueSuffix
     privateEndpointSubnetId: networking.outputs.sharedServicesSubnetId
-    hubVnetId: networking.outputs.hubVnetId
     keyVaultDnsZoneId: networking.outputs.keyVaultDnsZoneId
     logAnalyticsWorkspaceId: monitoring.outputs.logAnalyticsWorkspaceId
-    // App Service principal ID wired in after App Service module runs
-    appServicePrincipalId: appService.outputs.webAppPrincipalId
   }
 }
 
 // =============================================================================
 // APP SERVICE
-// Depends on monitoring (needs connection string) and networking (needs subnet)
+// Depends on: monitoring (connection string), networking (subnet), keyVault (URI)
+// KV URI is safe to pass here — no circular ref because KV no longer needs
+// AppService output at deploy time
 // =============================================================================
 
 module appService 'modules/appservice.bicep' = {
@@ -117,17 +117,28 @@ module appService 'modules/appservice.bicep' = {
 }
 
 // =============================================================================
-// RBAC — Key Vault Secrets User for staging slot MI
-// Production slot RBAC is handled inside keyvault.bicep
+// RBAC — assigned AFTER both Key Vault and App Service are deployed
+// Production slot MI
 // =============================================================================
 
+module prodSlotKvRbac 'modules/rbac.bicep' = {
+  name: 'deploy-prod-kv-rbac-${environmentName}'
+  scope: workloadRg
+  params: {
+    keyVaultName: keyVault.outputs.keyVaultName
+    principalId: appService.outputs.webAppPrincipalId
+    roleDescription: 'Production App Service MI - Key Vault Secrets User'
+  }
+}
+
+// Staging slot MI
 module stagingSlotKvRbac 'modules/rbac.bicep' = {
   name: 'deploy-staging-kv-rbac-${environmentName}'
   scope: workloadRg
   params: {
     keyVaultName: keyVault.outputs.keyVaultName
     principalId: appService.outputs.stagingSlotPrincipalId
-    roleDescription: 'Staging slot MI - read KV secrets for blue-green deployments'
+    roleDescription: 'Staging slot MI - Key Vault Secrets User'
   }
 }
 
@@ -135,14 +146,14 @@ module stagingSlotKvRbac 'modules/rbac.bicep' = {
 // OUTPUTS
 // =============================================================================
 
-output networkRgName        string = networkRg.name
-output workloadRgName       string = workloadRg.name
-output hubVnetId            string = networking.outputs.hubVnetId
-output spokeVnetId          string = networking.outputs.spokeVnetId
-output keyVaultName         string = keyVault.outputs.keyVaultName
-output keyVaultUri          string = keyVault.outputs.keyVaultUri
-output logAnalyticsName     string = monitoring.outputs.logAnalyticsWorkspaceName
-output appInsightsName      string = monitoring.outputs.appInsightsName
-output webAppName           string = appService.outputs.webAppName
-output webAppHostname       string = appService.outputs.webAppHostname
-output webAppPrincipalId    string = appService.outputs.webAppPrincipalId
+output networkRgName     string = networkRg.name
+output workloadRgName    string = workloadRg.name
+output hubVnetId         string = networking.outputs.hubVnetId
+output spokeVnetId       string = networking.outputs.spokeVnetId
+output keyVaultName      string = keyVault.outputs.keyVaultName
+output keyVaultUri       string = keyVault.outputs.keyVaultUri
+output logAnalyticsName  string = monitoring.outputs.logAnalyticsWorkspaceName
+output appInsightsName   string = monitoring.outputs.appInsightsName
+output webAppName        string = appService.outputs.webAppName
+output webAppHostname    string = appService.outputs.webAppHostname
+output webAppPrincipalId string = appService.outputs.webAppPrincipalId
