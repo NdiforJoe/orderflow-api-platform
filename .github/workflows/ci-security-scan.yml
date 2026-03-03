@@ -1,0 +1,182 @@
+# =============================================================================
+# ci-security-scan.yml
+# PR gate — runs on every pull request to main
+# All 4 gates must pass before merge is allowed
+# WAF Security: shift-left — security issues caught before they reach Azure
+# =============================================================================
+
+name: CI Security Scan
+
+on:
+  pull_request:
+    branches: [main]
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+  security-events: write  # Required for CodeQL to upload SARIF results
+  actions: read
+
+jobs:
+  # ===========================================================================
+  # GATE 1: BUILD
+  # Confirms the .NET API compiles cleanly before running expensive scans
+  # ===========================================================================
+  build:
+    name: Build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Restore
+        run: dotnet restore src/OrderManagement.Api/OrderManagement.Api.csproj
+
+      - name: Build
+        run: dotnet build src/OrderManagement.Api/OrderManagement.Api.csproj --no-restore --configuration Release
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-output
+          path: src/OrderManagement.Api/bin/Release/
+
+  # ===========================================================================
+  # GATE 2: CODEQL SAST
+  # Static analysis — finds SQL injection, XSS, insecure deserialization etc.
+  # Free for public repos, requires GitHub Advanced Security for private
+  # ===========================================================================
+  codeql:
+    name: CodeQL SAST
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: csharp
+          queries: security-extended  # OWASP Top 10 query pack
+
+      - name: Setup .NET 8
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: '8.0.x'
+
+      - name: Build for CodeQL
+        run: dotnet build src/OrderManagement.Api/OrderManagement.Api.csproj --configuration Release
+
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:csharp"
+
+  # ===========================================================================
+  # GATE 3: SNYK SCA
+  # Software Composition Analysis — finds vulnerable NuGet packages
+  # Free tier: unlimited scans on public repos
+  # Requires: SNYK_TOKEN secret in GitHub repo settings
+  # ===========================================================================
+  snyk:
+    name: Snyk SCA
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Run Snyk to check for NuGet vulnerabilities
+        uses: snyk/actions/dotnet@master
+        env:
+          SNYK_TOKEN: ${{ secrets.SNYK_TOKEN }}
+        with:
+          args: >
+            --file=src/OrderManagement.Api/OrderManagement.Api.csproj
+            --severity-threshold=high
+            --sarif-file-output=snyk.sarif
+
+      - name: Upload Snyk SARIF to GitHub Security tab
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: snyk.sarif
+
+  # ===========================================================================
+  # GATE 4: TRIVY — container + IaC scan
+  # Scans Dockerfile for OS vulnerabilities and Bicep for misconfigurations
+  # No token required — fully open source
+  # ===========================================================================
+  trivy:
+    name: Trivy Container + IaC Scan
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build Docker image for scanning
+        run: |
+          docker build \
+            -t orderflow-api:${{ github.sha }} \
+            src/OrderManagement.Api/
+
+      - name: Trivy container scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: orderflow-api:${{ github.sha }}
+          format: sarif
+          output: trivy-container.sarif
+          severity: HIGH,CRITICAL
+          exit-code: '1'  # Fail on HIGH/CRITICAL
+
+      - name: Upload Trivy container SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-container.sarif
+          category: trivy-container
+
+      - name: Trivy IaC scan (Bicep)
+        uses: aquasecurity/trivy-action@master
+        with:
+          scan-type: config
+          scan-ref: infra/bicep/
+          format: sarif
+          output: trivy-iac.sarif
+          severity: HIGH,CRITICAL
+          exit-code: '0'  # Warn only — IaC findings are advisory
+
+      - name: Upload Trivy IaC SARIF
+        uses: github/codeql-action/upload-sarif@v3
+        if: always()
+        with:
+          sarif_file: trivy-iac.sarif
+          category: trivy-iac
+
+  # ===========================================================================
+  # GATE 5: BICEP LINT
+  # Confirms IaC has no errors before any deployment attempt
+  # ===========================================================================
+  bicep-lint:
+    name: Bicep Lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Azure CLI
+        run: curl -sL https://aka.ms/InstallAzureCLIDeb | sudo bash
+
+      - name: Install Bicep
+        run: az bicep install
+
+      - name: Lint main.bicep
+        run: az bicep lint --file infra/bicep/main.bicep

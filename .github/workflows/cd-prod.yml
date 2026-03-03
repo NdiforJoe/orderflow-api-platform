@@ -1,0 +1,216 @@
+# =============================================================================
+# cd-prod.yml
+# Continuous Deployment — triggered on push to main after CI passes
+# Flow: Build → Deploy Dev → DAST → Manual Approval → Blue-Green Prod Deploy
+# WAF Security: OIDC federated login — zero stored service principal secrets
+# WAF Reliability: blue-green slot swap with health check + auto-rollback
+# =============================================================================
+
+name: CD Production
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:  # Allow manual trigger
+
+permissions:
+  id-token: write   # Required for OIDC federated login
+  contents: read
+
+env:
+  AZURE_SUBSCRIPTION_ID: 6e79609a-4219-4ec3-8c0e-403daead33bc
+  AZURE_TENANT_ID: 5b17d803-9051-407f-aed8-b4d99347b76b
+  ACR_NAME: acrdevdev001
+  APP_NAME: app-orderflow-dev
+  RESOURCE_GROUP: rg-orderflow-dev
+  IMAGE_NAME: orderflow-api
+
+jobs:
+  # ===========================================================================
+  # STAGE 1: BUILD AND PUSH TO ACR
+  # Uses OIDC — no stored Azure credentials anywhere in this pipeline
+  # ===========================================================================
+  build-and-push:
+    name: Build and Push
+    runs-on: ubuntu-latest
+    outputs:
+      image-tag: ${{ steps.meta.outputs.image-tag }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Set image tag
+        id: meta
+        run: echo "image-tag=${{ github.sha }}" >> $GITHUB_OUTPUT
+
+      - name: Login to ACR
+        run: az acr login --name ${{ env.ACR_NAME }}
+
+      - name: Build and push
+        run: |
+          docker build \
+            -t ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ github.sha }} \
+            -t ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:latest \
+            src/OrderManagement.Api/
+          docker push ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ github.sha }}
+          docker push ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:latest
+
+  # ===========================================================================
+  # STAGE 2: DEPLOY TO DEV
+  # Deploy to production slot — dev environment has no staging slot swap
+  # ===========================================================================
+  deploy-dev:
+    name: Deploy Dev
+    runs-on: ubuntu-latest
+    needs: build-and-push
+    environment: dev
+    steps:
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy to App Service
+        run: |
+          az webapp config container set \
+            --name ${{ env.APP_NAME }} \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --container-image-name ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ needs.build-and-push.outputs.image-tag }} \
+            --container-registry-url https://${{ env.ACR_NAME }}.azurecr.io
+
+      - name: Wait for health check
+        run: |
+          echo "Waiting 60s for app to start..."
+          sleep 60
+          response=$(curl -s -o /dev/null -w "%{http_code}" \
+            https://${{ env.APP_NAME }}.azurewebsites.net/health)
+          if [ "$response" != "200" ]; then
+            echo "Health check failed: HTTP $response"
+            exit 1
+          fi
+          echo "Health check passed: HTTP $response"
+
+  # ===========================================================================
+  # STAGE 3: DAST — OWASP ZAP
+  # Dynamic Application Security Testing against live dev environment
+  # Scans for OWASP Top 10 vulnerabilities in running application
+  # ===========================================================================
+  dast:
+    name: DAST - OWASP ZAP
+    runs-on: ubuntu-latest
+    needs: deploy-dev
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: OWASP ZAP Baseline Scan
+        uses: zaproxy/action-baseline@v0.12.0
+        with:
+          target: https://${{ env.APP_NAME }}.azurewebsites.net
+          rules_file_name: .zap/rules.tsv
+          cmd_options: '-a'
+          fail_action: false  # Advisory only — review findings, don't block
+
+      - name: Upload ZAP report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zap-report
+          path: report_html.html
+
+  # ===========================================================================
+  # STAGE 4: MANUAL APPROVAL
+  # Required before any production deployment
+  # Configured in GitHub → Environments → production → Required reviewers
+  # ===========================================================================
+  approval:
+    name: Awaiting Approval
+    runs-on: ubuntu-latest
+    needs: dast
+    environment: production  # This environment has required reviewers configured
+    steps:
+      - name: Approval granted
+        run: echo "Production deployment approved by ${{ github.actor }}"
+
+  # ===========================================================================
+  # STAGE 5: BLUE-GREEN PRODUCTION DEPLOY
+  # 1. Deploy to staging slot
+  # 2. Health check staging slot
+  # 3. Swap staging → production (atomic, zero downtime)
+  # 4. Auto-rollback if post-swap health check fails
+  # ===========================================================================
+  deploy-prod:
+    name: Blue-Green Deploy
+    runs-on: ubuntu-latest
+    needs: approval
+    environment: production
+    steps:
+      - name: Azure Login (OIDC)
+        uses: azure/login@v2
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ env.AZURE_TENANT_ID }}
+          subscription-id: ${{ env.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Deploy to staging slot
+        run: |
+          az webapp config container set \
+            --name ${{ env.APP_NAME }} \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --slot staging \
+            --container-image-name ${{ env.ACR_NAME }}.azurecr.io/${{ env.IMAGE_NAME }}:${{ needs.build-and-push.outputs.image-tag }} \
+            --container-registry-url https://${{ env.ACR_NAME }}.azurecr.io
+
+      - name: Health check staging slot
+        run: |
+          echo "Waiting 90s for staging slot to warm up..."
+          sleep 90
+          response=$(curl -s -o /dev/null -w "%{http_code}" \
+            https://${{ env.APP_NAME }}-staging.azurewebsites.net/health)
+          if [ "$response" != "200" ]; then
+            echo "Staging health check failed: HTTP $response"
+            exit 1
+          fi
+          echo "Staging health check passed: HTTP $response"
+
+      - name: Swap staging to production
+        run: |
+          az webapp deployment slot swap \
+            --name ${{ env.APP_NAME }} \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --slot staging \
+            --target-slot production
+
+      - name: Post-swap health check
+        id: post-swap-health
+        run: |
+          echo "Waiting 30s after swap..."
+          sleep 30
+          response=$(curl -s -o /dev/null -w "%{http_code}" \
+            https://${{ env.APP_NAME }}.azurewebsites.net/health)
+          if [ "$response" != "200" ]; then
+            echo "Post-swap health check failed: HTTP $response"
+            echo "health-failed=true" >> $GITHUB_OUTPUT
+            exit 1
+          fi
+          echo "Production health check passed: HTTP $response"
+
+      - name: Auto-rollback on failure
+        if: failure() && steps.post-swap-health.outputs.health-failed == 'true'
+        run: |
+          echo "Rolling back — swapping production back to previous version..."
+          az webapp deployment slot swap \
+            --name ${{ env.APP_NAME }} \
+            --resource-group ${{ env.RESOURCE_GROUP }} \
+            --slot staging \
+            --target-slot production
+          echo "Rollback complete"
