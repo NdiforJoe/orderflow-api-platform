@@ -63,23 +63,147 @@ A secure, governed Azure-native API platform where:
 
 ### High-Level Architecture
 
-![High-Level Architecture](docs/diagrams/diagram1-network-topology.png)
+```mermaid
+graph TD
+    Internet([Internet]) --> AFD[Azure Front Door\nGlobal Load Balancer + WAF]
+    AFD --> FW[Azure Firewall Premium\nIDPS + TLS Inspection]
+    FW --> APIM[APIM - Internal VNet Mode\nPrivate IP 10.0.2.4\nJWT Validate · Rate Limit · Cache]
+
+    subgraph Hub VNet 10.0.0.0/16
+        FW
+        APIM
+    end
+
+    subgraph Spoke VNet 10.1.0.0/16
+        APIM --> APP[App Service P1v4\nSystem-Assigned MI\nVNet Integrated]
+        APP --> KV[Key Vault\nPrivate Endpoint\nPublic Access Disabled]
+        APP --> SQL[Azure SQL Serverless\nEntra ID Auth Only]
+        APP --> REDIS[Redis Cache C1\nPrivate Endpoint\nSSL Only]
+        APP --> SB[Service Bus Standard\nEntra ID Auth Only]
+    end
+
+    APP --> ACR[Container Registry\nAcrPull via MI]
+
+    style APIM fill:#0078D4,color:#fff
+    style APP fill:#0078D4,color:#fff
+    style KV fill:#107C10,color:#fff
+    style SQL fill:#107C10,color:#fff
+    style REDIS fill:#107C10,color:#fff
+    style SB fill:#107C10,color:#fff
+```
+
 *Figure 1: Hub-spoke zero-trust network topology. All external traffic enters via Azure Front Door → Azure Firewall → APIM (internal VNet mode) → App Service (VNet-integrated). No backend service has a public IP.*
+
+---
 
 ### Security and Identity Flow
 
-![Security and Identity Flow](docs/diagrams/diagram2-security-identity.png)
+```mermaid
+sequenceDiagram
+    participant Partner as B2B Partner
+    participant SPA as SPA User
+    participant Entra as Entra ID
+    participant APIM as API Management
+    participant App as App Service
+    participant KV as Key Vault
+    participant SQL as Azure SQL
+
+    Note over Partner,Entra: Flow 1 - B2B Client Credentials
+    Partner->>Entra: POST /token (client_id + client_secret)
+    Entra-->>Partner: JWT access token (1hr)
+    Partner->>APIM: GET /orders (Bearer token)
+    APIM->>Entra: Validate JWT signature + claims
+    APIM->>App: Forward with X-Consumer-Id, X-Tenant-Id headers
+    Note over APIM,App: Raw JWT stripped - backend never sees it
+
+    Note over SPA,Entra: Flow 2 - SPA Auth Code + PKCE
+    SPA->>Entra: Auth code request + code_challenge
+    Entra-->>SPA: Auth code
+    SPA->>Entra: Exchange code + code_verifier
+    Entra-->>SPA: JWT access token
+    SPA->>APIM: GET /orders (Bearer token)
+    APIM->>App: Forward with enriched headers
+
+    Note over App,SQL: Flow 3 - Service-to-Service Managed Identity
+    App->>Entra: Request MI token (automatic)
+    Entra-->>App: Short-lived token (auto-rotated)
+    App->>KV: Get secrets (Key Vault Secrets User role)
+    App->>SQL: Connect (Entra ID auth, no password)
+```
+
 *Figure 2: Three auth flows — B2B client credentials, SPA auth code + PKCE, and service-to-service Managed Identity. APIM validates every JWT and strips it before forwarding to the backend.*
+
+---
 
 ### DevSecOps CI/CD Pipeline
 
-![CI/CD Pipeline](docs/diagrams/diagram3-cicd-pipeline.png)
+```mermaid
+graph LR
+    PR[Pull Request] --> B[Build\n.NET 8 Restore + Compile]
+    B --> CQ[CodeQL SAST\nOWASP Top 10]
+    B --> SN[Snyk SCA\nNuGet Vulnerabilities]
+    B --> TR[Trivy\nContainer + IaC Scan]
+    B --> BL[Bicep Lint\nIaC Validation]
+
+    CQ --> GATE{All Gates\nGreen?}
+    SN --> GATE
+    TR --> GATE
+    BL --> GATE
+
+    GATE -->|Yes| ACR[Build + Push\nDocker to ACR\nOIDC Login]
+    GATE -->|No| BLOCK[Merge Blocked]
+
+    ACR --> DEV[Deploy Dev\nHealth Check]
+    DEV --> DAST[DAST\nOWASP ZAP]
+    DAST --> APPROVAL[Manual Approval\nRequired Reviewer]
+    APPROVAL --> STAGING[Deploy Staging Slot\nHealth Check]
+    STAGING --> SWAP[Slot Swap\nZero Downtime]
+    SWAP --> PROD_HC[Post-Swap\nHealth Check]
+    PROD_HC -->|Pass| DONE[Production Live]
+    PROD_HC -->|Fail| ROLLBACK[Auto-Rollback\nInstant]
+
+    style GATE fill:#FF8C00,color:#fff
+    style BLOCK fill:#D13438,color:#fff
+    style DONE fill:#107C10,color:#fff
+    style ROLLBACK fill:#D13438,color:#fff
+    style APPROVAL fill:#0078D4,color:#fff
+```
+
 *Figure 3: Five mandatory security gates before production. Blue-green slot swap with automated health check and instant rollback. OIDC federated login — no service principal secrets stored anywhere.*
+
+---
 
 ### Disaster Recovery Topology
 
-![DR Topology](docs/diagrams/diagram4-dr-topology.png)
-*Figure 4: Warm standby in paired region (East US 2 → Central US). RTO < 15 min for app tier, < 60 min full platform. SQL geo-replication with < 5s RPO.*
+```mermaid
+graph TD
+    subgraph Primary[Primary Region - East US 2]
+        AFD_P[Azure Front Door\nHealth Probe Every 30s]
+        APP_P[App Service\n3 Instances Zone Redundant]
+        SQL_P[Azure SQL\nPrimary Read/Write]
+        SB_P[Service Bus\nGeo-DR Primary]
+        REDIS_P[Redis P1\nPrimary]
+    end
+
+    subgraph Secondary[Secondary Region - Central US]
+        APP_S[App Service\n0 to 3 instances on failover\nRTO 2 min]
+        SQL_S[Azure SQL\nReadable Secondary\nRPO less than 5s]
+        SB_S[Service Bus\nGeo-DR Secondary]
+        REDIS_S[Redis\nEmpty on failover\n5 min warm-up]
+        APIM_S[APIM\nRestored from GRS Backup\nRTO 45 min]
+    end
+
+    SQL_P -->|Async geo-replication RPO less than 5s| SQL_S
+    SB_P -->|Metadata sync| SB_S
+    AFD_P -->|Health probe fails - traffic shifts| APP_S
+
+    style SQL_P fill:#0078D4,color:#fff
+    style SQL_S fill:#107C10,color:#fff
+    style APP_S fill:#107C10,color:#fff
+    style APIM_S fill:#107C10,color:#fff
+```
+
+*Figure 4: Warm standby in paired region (East US 2 → Central US). RTO < 15 min for app tier, < 60 min full platform. SQL readable secondary serves reporting queries in normal operations — DR cost partially offset.*
 
 ---
 
@@ -322,7 +446,6 @@ az network private-endpoint list --resource-group rg-orderflow-dev --output tabl
 **Cost: ~$0.98/day cumulative**
 
 ```powershell
-# Same incremental deploy command — Bicep only creates new resources
 az deployment sub create `
     --location "eastus2" `
     --template-file infra\bicep\main.bicep `
